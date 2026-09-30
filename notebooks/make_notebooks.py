@@ -51,24 +51,51 @@ WORK = "/kaggle/working" if os.path.isdir("/kaggle/working") else "/content"
 def secret(name):
     try:
         from kaggle_secrets import UserSecretsClient
-        return UserSecretsClient().get_secret(name)
+        value = UserSecretsClient().get_secret(name)
     except ImportError:
         from google.colab import userdata
-        return userdata.get(name)
+        value = userdata.get(name)
+    return (value or "").strip()  # pasted secrets often carry a stray space/newline
 
 os.environ["HF_TOKEN"] = secret("HF_TOKEN")
+GH_TOKEN = secret("GITHUB_TOKEN")
+
+def github_check():
+    """Explain a failed clone without ever printing the token."""
+    import json, urllib.request, urllib.error
+    req = urllib.request.Request(f"https://api.github.com/repos/{{GITHUB_REPO}}",
+                                 headers={{"Authorization": f"Bearer {{GH_TOKEN}}", "User-Agent": "vishalam"}})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            info = json.loads(resp.read())
+            return f"API sees the repo (private={{info.get('private')}}); token works for the API"
+    except urllib.error.HTTPError as e:
+        return {{401: "401: GitHub rejects this token (wrong/expired/revoked value in the secret)",
+                403: "403: token valid but not allowed (check 'Contents: Read-only' permission)",
+                404: f"404: token valid but cannot see {{GITHUB_REPO}} (give it access to this repo, "
+                     "resource owner shan3520)"}}.get(e.code, f"HTTP {{e.code}}")
+
+def git(*args):
+    import base64
+    basic = base64.b64encode(f"x-access-token:{{GH_TOKEN}}".encode()).decode()
+    auth = ["-c", f"http.extraHeader=Authorization: Basic {{basic}}"]  # token never in URLs or .git/config
+    r = subprocess.run(["git", *auth, *args], capture_output=True, text=True)
+    out = r.stdout + r.stderr
+    for s in (GH_TOKEN, basic):
+        if s:
+            out = out.replace(s, "***")
+    return r.returncode, out
+
 os.chdir(WORK)
+url = f"https://github.com/{{GITHUB_REPO}}.git"
 if not os.path.isdir("vishalam"):
-    r = subprocess.run(["git", "clone", "--depth", "1",
-                        f"https://x-access-token:{{secret('GITHUB_TOKEN')}}@github.com/{{GITHUB_REPO}}.git", "vishalam"],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        raise SystemExit("git clone failed (check the GITHUB_TOKEN secret and repo name)")
-    subprocess.run(["git", "-C", "vishalam", "remote", "set-url", "origin", f"https://github.com/{{GITHUB_REPO}}.git"], check=True)
+    code, out = git("clone", "--depth", "1", url, "vishalam")
+    if code != 0:
+        print(out)
+        print("diagnosis:", github_check(), "| token length:", len(GH_TOKEN))
+        raise SystemExit("git clone failed - see the diagnosis above")
 else:
-    subprocess.run(["git", "-C", "vishalam", "pull", "--ff-only",
-                    f"https://x-access-token:{{secret('GITHUB_TOKEN')}}@github.com/{{GITHUB_REPO}}.git"],
-                   capture_output=True, text=True)
+    git("-C", "vishalam", "pull", "--ff-only")
 os.chdir(f"{{WORK}}/vishalam")
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], check=True)
 print("ready:", subprocess.run(["git", "log", "-1", "--oneline"], capture_output=True, text=True).stdout)
