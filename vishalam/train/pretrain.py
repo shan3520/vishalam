@@ -1,0 +1,275 @@
+"""Vishalam pretraining loop.
+
+Single GPU / CPU:
+    python -m vishalam.train.pretrain --config configs/vishalam-30m.yaml --data-dir data/shards --out runs/30m
+Kaggle (2x T4):
+    torchrun --nproc_per_node=2 -m vishalam.train.pretrain --config configs/vishalam-350m.yaml \
+        --data-repo shantanu3520/vishalam-data --ckpt-repo shantanu3520/vishalam --out /kaggle/working/run \
+        --max-hours 11.3
+
+Resumes automatically from <out>/ckpt.pt, else from the HF checkpoint repo. Stops cleanly after
+--max-hours (saving + uploading first) so Kaggle/Colab session limits never lose work.
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import csv
+import json
+import math
+import os
+import platform
+import shutil
+import time
+from pathlib import Path
+
+import torch
+import torch.distributed as dist
+
+from vishalam.model.config import ModelConfig, load_yaml
+from vishalam.model.model import Vishalam
+from vishalam.train.ckpt import load_checkpoint, save_checkpoint, save_weights, unwrap
+from vishalam.train.data import GlobalSampler, ShardStore, TrainLoader, val_batches
+
+
+def lr_at(step: int, total: int, peak: float, warmup: int, min_ratio: float) -> float:
+    if step < warmup:
+        return peak * (step + 1) / warmup
+    progress = min(1.0, (step - warmup) / max(1, total - warmup))
+    return peak * (min_ratio + (1 - min_ratio) * 0.5 * (1 + math.cos(math.pi * progress)))
+
+
+def build_optimizer(model: torch.nn.Module, lr: float, weight_decay: float, device_type: str):
+    decay, no_decay = [], []
+    for p in model.parameters():
+        if not p.requires_grad:
+            continue
+        (decay if p.dim() >= 2 else no_decay).append(p)
+    groups = [
+        {"params": decay, "weight_decay": weight_decay},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+    kwargs = {"fused": True} if device_type == "cuda" else {}
+    return torch.optim.AdamW(groups, lr=lr, betas=(0.9, 0.95), eps=1e-8, **kwargs)
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--data-dir", default="data/shards", help="local shard dir (cache dir if --data-repo)")
+    ap.add_argument("--data-repo", default=None, help="HF dataset repo holding the shards")
+    ap.add_argument("--ckpt-repo", default=None, help="HF model repo for checkpoints")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--max-hours", type=float, default=1e9)
+    ap.add_argument("--max-steps", type=int, default=None, help="override (smoke tests)")
+    ap.add_argument("--stop-at-step", type=int, default=None, help="pause (save) at this step (tests)")
+    ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--force", action="store_true", help="ignore a recent heartbeat from another session")
+    args = ap.parse_args()
+
+    # ---- distributed setup ----
+    ddp = "RANK" in os.environ
+    if ddp:
+        dist.init_process_group("nccl")
+        rank, world = dist.get_rank(), dist.get_world_size()
+        local_rank = int(os.environ["LOCAL_RANK"])
+        torch.cuda.set_device(local_rank)
+        device = f"cuda:{local_rank}"
+    else:
+        rank, world = 0, 1
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_type = "cuda" if device.startswith("cuda") else "cpu"
+    master = rank == 0
+    torch.manual_seed(args.seed + rank)
+
+    raw = load_yaml(args.config)
+    name, tcfg = raw["name"], raw["train"]
+    mcfg = ModelConfig(**raw["model"])
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+
+    # ---- precision: bf16 where supported (A100/L4...), fp16 + loss scaling on T4 ----
+    if device_type == "cuda":
+        amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported(including_emulation=False) else torch.float16
+    else:
+        amp_dtype = None
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
+    autocast = (
+        (lambda: torch.autocast("cuda", dtype=amp_dtype)) if amp_dtype else contextlib.nullcontext
+    )
+
+    # ---- model / optimizer ----
+    model = Vishalam(mcfg).to(device)
+    model.grad_checkpointing = bool(tcfg.get("grad_checkpointing", False))
+    if master:
+        print(f"{name}: {unwrap(model).num_params() / 1e6:.1f}M params, device={device}x{world}, amp={amp_dtype}", flush=True)
+    optimizer = build_optimizer(model, tcfg["lr"], tcfg["weight_decay"], device_type)
+
+    # ---- data ----
+    store = ShardStore(args.data_dir, args.data_repo)
+    manifest = store.manifest()
+    seq_len = tcfg["seq_len"]
+    sampler = GlobalSampler(store, manifest["train"], seq_len, seed=args.seed)
+    global_batch = tcfg["global_batch_seqs"]
+    loader = TrainLoader(sampler, global_batch, tcfg["micro_batch"], rank, world)
+    total_steps = args.max_steps or int(tcfg["total_tokens"] // (global_batch * seq_len))
+    vbatches = val_batches(store, manifest["val"], seq_len, tcfg["micro_batch"], tcfg["eval_batches"],
+                           rank, world, device) if manifest.get("val") else []
+
+    # the shards must have been made with a tokenizer whose vocab matches the model
+    try:
+        from vishalam.tokenizer.bpe import Tokenizer
+        tok_vocab = Tokenizer.load(store.path("tokenizer.json")).vocab_size
+        assert tok_vocab == mcfg.vocab_size, f"tokenizer vocab {tok_vocab} != model vocab {mcfg.vocab_size}"
+    except FileNotFoundError:
+        pass
+
+    # ---- hub + resume ----
+    hub = None
+    if args.ckpt_repo:
+        from vishalam.train.hub import HubSync
+        # every rank reads the heartbeat, so all ranks agree on whether to abort
+        hb = HubSync(args.ckpt_repo).pull(f"{name}/latest/heartbeat.json", out / f"_hb{rank}")
+        if hb is not None and not args.force:
+            beat = json.loads(hb.read_text())
+            age_min = (time.time() - beat["utc"]) / 60
+            if beat.get("running") and age_min < tcfg["save_every_minutes"] + 20:
+                raise SystemExit(
+                    f"'{name}' looks like it is already training on {beat.get('host')} "
+                    f"(heartbeat {age_min:.0f} min ago). Two sessions would overwrite each other's "
+                    f"checkpoints. Stop the other session, wait, or pass --force if it is dead.")
+        if master:
+            hub = HubSync(args.ckpt_repo)
+    ckpt_path = out / "ckpt.pt"
+    if not ckpt_path.exists() and args.ckpt_repo:
+        if master:
+            hub.pull(f"{name}/latest/ckpt.pt", out / "_hub")
+            prev_log = hub.pull(f"{name}/latest/log.csv", out / "_hub")
+            if prev_log is not None:
+                shutil.copy(prev_log, out / "log.csv")  # keep one continuous loss curve
+        if ddp:
+            dist.barrier()
+        pulled = out / "_hub" / name / "latest" / "ckpt.pt"
+        if pulled.exists():
+            ckpt_path = pulled
+    step = 0
+    if ckpt_path.exists():
+        state = load_checkpoint(ckpt_path, model, optimizer, scaler, map_location=device)
+        step = state["step"]
+        if master:
+            print(f"resumed from {ckpt_path} at step {step}", flush=True)
+    if ddp:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+
+    # ---- logging ----
+    log_path = out / "log.csv"
+    if master and not log_path.exists():
+        with open(log_path, "w", newline="") as f:
+            csv.writer(f).writerow(["step", "tokens", "loss", "val_loss", "lr", "grad_norm", "tok_per_s", "scale"])
+
+    def log(row):
+        if master:
+            with open(log_path, "a", newline="") as f:
+                csv.writer(f).writerow(row)
+
+    def heartbeat(running: bool) -> Path:
+        p = out / "heartbeat.json"
+        p.write_text(json.dumps({"utc": time.time(), "host": platform.node(), "step": step, "running": running}))
+        return p
+
+    if hub:
+        hub.push(heartbeat(True), f"{name}/latest/heartbeat.json", f"{name} session start")
+
+    def save(final: bool = False, running: bool = True):
+        if not master:
+            return
+        save_checkpoint(out / "ckpt.pt", model, optimizer, scaler,
+                        step, {"name": name, "tokens": step * global_batch * seq_len})
+        files = [(out / "ckpt.pt", f"{name}/latest/ckpt.pt"), (log_path, f"{name}/latest/log.csv"),
+                 (heartbeat(running), f"{name}/latest/heartbeat.json")]
+        if final:
+            save_weights(out / "model.pt", model, mcfg.to_dict())
+            files.append((out / "model.pt", f"{name}/final/model.pt"))
+        if hub:
+            hub.push_async(files, f"{name} step {step}")
+        print(f"saved checkpoint at step {step}", flush=True)
+
+    @torch.no_grad()
+    def evaluate() -> float:
+        model.eval()
+        losses = []
+        for x, y in vbatches:
+            with autocast():
+                _, loss = model(x, y)
+            losses.append(loss.float())
+        model.train()
+        v = torch.stack(losses).mean() if losses else torch.tensor(float("nan"), device=device)
+        if ddp:
+            dist.all_reduce(v, op=dist.ReduceOp.AVG)
+        return v.item()
+
+    # ---- train ----
+    t_start = time.time()
+    last_save = time.time()
+    model.train()
+    while step < total_steps:
+        t0 = time.time()
+        lr = lr_at(step, total_steps, tcfg["lr"], tcfg["warmup_steps"], tcfg["min_lr_ratio"])
+        for g in optimizer.param_groups:
+            g["lr"] = lr
+        batches = loader.step_batches(step, device)
+        loss_sum = torch.zeros((), device=device)
+        for i, (x, y) in enumerate(batches):
+            sync = contextlib.nullcontext() if (not ddp or i == len(batches) - 1) else model.no_sync()
+            with sync:
+                with autocast():
+                    _, loss = model(x, y, z_loss=tcfg.get("z_loss", 0.0))
+                loss = loss / len(batches)
+                scaler.scale(loss).backward()
+            loss_sum += loss.detach()
+        scaler.unscale_(optimizer)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg["grad_clip"])
+        scaler.step(optimizer)  # skipped automatically if grads are inf/nan
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+        step += 1
+
+        if ddp:
+            dist.all_reduce(loss_sum, op=dist.ReduceOp.AVG)
+        dt = time.time() - t0
+        tok_s = global_batch * seq_len / dt
+        val = ""
+        if vbatches and (step % tcfg["eval_every"] == 0 or step == total_steps):
+            val = f"{evaluate():.4f}"
+        if master and (step % 10 == 0 or step == 1 or val):
+            print(f"step {step}/{total_steps} loss {loss_sum.item():.4f} {('val ' + val) if val else ''} "
+                  f"lr {lr:.2e} gnorm {grad_norm.item():.2f} {tok_s:,.0f} tok/s", flush=True)
+            log([step, step * global_batch * seq_len, f"{loss_sum.item():.4f}", val, f"{lr:.3e}",
+                 f"{grad_norm.item():.3f}", f"{tok_s:.0f}", scaler.get_scale() if scaler.is_enabled() else 1])
+
+        elapsed_h = (time.time() - t_start) / 3600
+        # stop decision must be identical on all ranks
+        pause = elapsed_h > args.max_hours or (args.stop_at_step is not None and step >= args.stop_at_step)
+        stop = torch.tensor([1.0 if pause else 0.0], device=device)
+        if ddp:
+            dist.all_reduce(stop, op=dist.ReduceOp.MAX)
+        if stop.item() > 0:
+            if master:
+                print(f"time budget reached ({elapsed_h:.2f} h) — saving and exiting", flush=True)
+            break
+        if (time.time() - last_save) / 60 > tcfg["save_every_minutes"]:
+            save()
+            last_save = time.time()
+
+    save(final=step >= total_steps, running=False)
+    if hub:
+        hub.wait()
+    if ddp:
+        dist.barrier()
+        dist.destroy_process_group()
+    if master:
+        print("finished" if step >= total_steps else f"paused at step {step}/{total_steps}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

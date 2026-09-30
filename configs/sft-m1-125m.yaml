@@ -1,0 +1,17 @@
+# M1 agent fine-tuning of the 125M model (first working agent / demo).
+name: vishalam-125m-agent-m1
+init: hub:vishalam-125m/final/model.pt
+train:
+  seq_len: 4096
+  micro_batch: 4
+  global_batch_seqs: 32     # 131k tokens per step
+  epochs: 3
+  lr: 1.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 100
+  weight_decay: 0.0
+  grad_clip: 1.0
+  z_loss: 0.0
+  grad_checkpointing: true
+  eval_every: 200
+  save_every_minutes: 30

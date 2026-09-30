@@ -1,0 +1,3 @@
+{"id": "h001", "split": "test", "category": "lists", "function_name": "second_smallest", "request": "Write a function `second_smallest(nums)` that returns the second smallest distinct number in the list, or None if there isn't one."}
+{"id": "h002", "split": "test", "category": "strings", "function_name": "shout", "request": "i need `shout` - takes a string and gives it back in all caps with an exclamation mark at the end"}
+{"id": "h003", "split": "seed", "category": "math", "function_name": "is_even", "request": "Can you make `is_even(n)`? True for even numbers, False for odd ones."}

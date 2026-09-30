@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vishalam</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="mark">V</span> Vishalam <span class="sub">coding agent</span></div>
+    <div id="status" class="status"></div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <button id="newTask" class="btn ghost wide">+ New task</button>
+      <div class="side-title">History</div>
+      <ul id="history" class="history"></ul>
+    </aside>
+    <main class="main">
+      <section id="thread" class="thread">
+        <div id="empty" class="empty">
+          <h1>What should Vishalam build?</h1>
+          <p>Describe a small Python function in plain English. Vishalam writes tests first, then the code,
+            runs the tests in a sandbox, and fixes its own mistakes. You see every step as it happens.</p>
+          <div class="examples">
+            <button class="chip" data-ex="Write a function `second_largest(nums)` that returns the second largest distinct number in the list, or None if there isn't one.">second largest</button>
+            <button class="chip" data-ex="Write a function `count_vowels(s)` that counts the vowels a, e, i, o, u in s, ignoring case.">count vowels</button>
+            <button class="chip" data-ex="Write a function `is_prime(n)` that returns True if n is a prime number. Numbers below 2 are not prime.">is prime</button>
+          </div>
+        </div>
+      </section>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="2" placeholder="e.g. Write a function `running_sum(nums)` that returns the running totals of nums"></textarea>
+        <div class="composer-actions">
+          <button type="button" id="demoBtn" class="btn ghost" hidden>Run a demo task</button>
+          <button type="submit" id="sendBtn" class="btn primary">Send</button>
+        </div>
+      </form>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

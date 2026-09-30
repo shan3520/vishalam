@@ -1,0 +1,10 @@
+# torch is installed separately (CUDA or CPU wheel) — see README
+numpy>=1.26
+regex>=2024.0
+pyyaml>=6.0
+tqdm>=4.66
+datasets>=3.0
+huggingface_hub>=0.25
+fastapi>=0.115
+uvicorn>=0.30
+pytest==8.3.3  # pinned: same version as the Docker sandbox, so test output text matches training data

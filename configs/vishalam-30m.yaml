@@ -1,0 +1,24 @@
+# Pilot: debugs the whole pipeline cheaply (~30M params, ~19M of them the 50k-token embedding).
+name: vishalam-30m
+model:
+  vocab_size: 50304
+  d_model: 384
+  n_layers: 6
+  n_heads: 6
+  ffn_dim: 1024
+  max_seq_len: 4096
+train:
+  seq_len: 4096
+  micro_batch: 8          # per GPU
+  global_batch_seqs: 64   # 262k tokens per optimizer step
+  total_tokens: 500_000_000
+  lr: 1.0e-3
+  min_lr_ratio: 0.1
+  warmup_steps: 200
+  weight_decay: 0.1
+  grad_clip: 1.0
+  z_loss: 1.0e-4
+  grad_checkpointing: false
+  eval_every: 250
+  eval_batches: 20
+  save_every_minutes: 30

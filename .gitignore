@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+# large / private artifacts — these live in the private HF repos, never in git
+/data/
+/checkpoints/
+/runs/
+*.bin
+*.pt
+*.safetensors
+app/history.db
+kaggle.json
+.env
+app/workspaces/

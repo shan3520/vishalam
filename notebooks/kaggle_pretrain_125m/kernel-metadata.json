@@ -1,0 +1,14 @@
+{
+ "id": "KAGGLE_USERNAME/kaggle-pretrain-125m",
+ "title": "vishalam pretrain 125m",
+ "code_file": "notebook.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": true,
+ "enable_internet": true,
+ "dataset_sources": [],
+ "competition_sources": [],
+ "kernel_sources": [],
+ "machine_shape": "NvidiaTeslaT4"
+}

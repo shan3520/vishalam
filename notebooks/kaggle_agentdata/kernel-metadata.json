@@ -1,0 +1,13 @@
+{
+ "id": "KAGGLE_USERNAME/kaggle-agentdata",
+ "title": "vishalam agent data m1",
+ "code_file": "notebook.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": false,
+ "enable_internet": true,
+ "dataset_sources": [],
+ "competition_sources": [],
+ "kernel_sources": []
+}
