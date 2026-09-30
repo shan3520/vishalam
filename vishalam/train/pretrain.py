@@ -29,7 +29,7 @@ import torch.distributed as dist
 from vishalam.model.config import ModelConfig, load_yaml
 from vishalam.model.model import Vishalam
 from vishalam.train.ckpt import load_checkpoint, save_checkpoint, save_weights, unwrap
-from vishalam.train.data import GlobalSampler, ShardStore, TrainLoader, val_batches
+from vishalam.train.data import GlobalSampler, ShardStore, TrainLoader, merge_local_manifests, val_batches
 
 
 def lr_at(step: int, total: int, peak: float, warmup: int, min_ratio: float) -> float:
@@ -58,6 +58,11 @@ def main() -> None:
     ap.add_argument("--config", required=True)
     ap.add_argument("--data-dir", default="data/shards", help="local shard dir (cache dir if --data-repo)")
     ap.add_argument("--data-repo", default=None, help="HF dataset repo holding the shards")
+    ap.add_argument("--data-dirs", default=None,
+                    help="comma list of local shard dirs, each with a manifest.json (Kaggle kernel outputs)")
+    ap.add_argument("--tokenizer", default=None, help="tokenizer.json (vocab size check)")
+    ap.add_argument("--resume-from", default=None,
+                    help="dir with ckpt.pt + log.csv from a previous session (e.g. the other ping-pong kernel)")
     ap.add_argument("--ckpt-repo", default=None, help="HF model repo for checkpoints")
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-hours", type=float, default=1e9)
@@ -106,8 +111,12 @@ def main() -> None:
     optimizer = build_optimizer(model, tcfg["lr"], tcfg["weight_decay"], device_type)
 
     # ---- data ----
-    store = ShardStore(args.data_dir, args.data_repo)
-    manifest = store.manifest()
+    if args.data_dirs:
+        store = ShardStore(out / "_shard_cache")  # shards are read in place (absolute paths)
+        manifest = merge_local_manifests([d for d in args.data_dirs.split(",") if d])
+    else:
+        store = ShardStore(args.data_dir, args.data_repo)
+        manifest = store.manifest()
     seq_len = tcfg["seq_len"]
     sampler = GlobalSampler(store, manifest["train"], seq_len, seed=args.seed)
     global_batch = tcfg["global_batch_seqs"]
@@ -119,7 +128,7 @@ def main() -> None:
     # the shards must have been made with a tokenizer whose vocab matches the model
     try:
         from vishalam.tokenizer.bpe import Tokenizer
-        tok_vocab = Tokenizer.load(store.path("tokenizer.json")).vocab_size
+        tok_vocab = Tokenizer.load(args.tokenizer or store.path("tokenizer.json")).vocab_size
         assert tok_vocab == mcfg.vocab_size, f"tokenizer vocab {tok_vocab} != model vocab {mcfg.vocab_size}"
     except FileNotFoundError:
         pass
@@ -152,6 +161,12 @@ def main() -> None:
         pulled = out / "_hub" / name / "latest" / "ckpt.pt"
         if pulled.exists():
             ckpt_path = pulled
+    if not ckpt_path.exists() and args.resume_from:
+        prev = Path(args.resume_from)
+        if (prev / "ckpt.pt").exists():
+            ckpt_path = prev / "ckpt.pt"  # read in place (Kaggle inputs are read-only)
+            if master and (prev / "log.csv").exists() and not (out / "log.csv").exists():
+                shutil.copy(prev / "log.csv", out / "log.csv")  # one continuous loss curve
     step = 0
     if ckpt_path.exists():
         state = load_checkpoint(ckpt_path, model, optimizer, scaler, map_location=device)

@@ -23,6 +23,25 @@ import numpy as np
 import torch
 
 
+def merge_local_manifests(dirs: list[str | Path]) -> dict:
+    """Combine the manifests of several local shard directories (e.g. the outputs of the Kaggle
+    data kernels) into one manifest with absolute shard paths. Order: dirs as given, shards in each
+    manifest's order, so the global data order is fixed for the whole run."""
+    merged: dict = {"train": [], "val": []}
+    shas = set()
+    for d in dirs:
+        d = Path(d)
+        m = json.loads((d / "manifest.json").read_text())
+        if m.get("tokenizer_sha"):
+            shas.add(m["tokenizer_sha"])
+        if len(shas) > 1:
+            raise ValueError(f"shard dirs were built with different tokenizers: {sorted(shas)}")
+        merged["train"] += [{"name": str((d / s["name"]).resolve()), "tokens": s["tokens"]} for s in m["train"]]
+        if not merged["val"] and m.get("val"):
+            merged["val"] = [{"name": str((d / s["name"]).resolve()), "tokens": s["tokens"]} for s in m["val"]]
+    return merged
+
+
 class ShardStore:
     """Resolves shard names to local files. Optionally downloads from a HF dataset repo,
     prefetches the next shard in the background, and deletes old shards to save disk."""

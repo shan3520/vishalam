@@ -1,17 +1,21 @@
-"""Generates the Kaggle/Colab notebooks (thin wrappers around the repo's scripts).
+"""Generates the Kaggle notebooks (thin wrappers around the repo's scripts).
 
     python notebooks/make_notebooks.py
 
-Each Kaggle notebook lives in its own folder with kernel-metadata.json so it can be launched with
-`kaggle kernels push -p notebooks/<folder>`.
+Design (no GitHub token, no Hugging Face uploads):
+  * the code arrives as the private Kaggle dataset <user>/vishalam-code (a tarball of the repo,
+    uploaded by tools/kaggle_driver.py push-code);
+  * every intermediate artefact (tokenizer, token shards, checkpoints, agent data) is a kernel's
+    /kaggle/working output, attached to later kernels as an input ("kernel_sources");
+  * only the two data kernels need a secret (HF_TOKEN, read-only) because bigcode/the-stack-dedup
+    is gated. Kaggle hands secrets only to runs started from the web editor.
+tools/kaggle_driver.py fills in dataset/kernel sources and pushes/monitors the kernels.
 """
 from __future__ import annotations
 
 import json
 from pathlib import Path
 
-GITHUB_REPO = "shan3520/vishalam"
-HF_USER = "shantanu3520"
 HERE = Path(__file__).parent
 
 
@@ -24,120 +28,112 @@ def _kaggle_user() -> str:
 
 
 KAGGLE_USER = _kaggle_user()
+CODE_DATASET = f"{KAGGLE_USER}/vishalam-code"
+
+SETUP = '''\
+# --- Vishalam setup: find the code dataset among the inputs, unpack, install (no secrets) ---
+import glob, os, shutil, subprocess, sys, tarfile, time
+T0 = time.time()
+def hours_left(limit=11.2):  # Kaggle stops sessions at 12 h; keep a margin for saving outputs
+    return max(0.25, limit - (time.time() - T0) / 3600)
+WORK, INPUT, CODE = "/kaggle/working", "/kaggle/input", "/tmp/vishalam"
+
+def inputs_with(marker, hint=""):
+    """Input directories that contain `marker` (a relative path) and whose path contains `hint`."""
+    hits = glob.glob(f"{INPUT}/**/{marker}", recursive=True)
+    dirs = [h[: -len(marker)].rstrip("/") for h in hits]
+    return sorted(d for d in set(dirs) if hint in d)
+
+if not os.path.isdir(CODE):
+    tars = glob.glob(f"{INPUT}/**/vishalam_code.tar.gz", recursive=True)
+    if tars:
+        os.makedirs(CODE)
+        with tarfile.open(tars[0]) as t:
+            t.extractall(CODE, filter="data")
+    else:  # Kaggle sometimes unpacks archives itself
+        roots = [d for d in inputs_with("vishalam/tokenizer/bpe.py") if os.path.exists(f"{d}/requirements.txt")]
+        if not roots:
+            raise SystemExit("code dataset not attached - run tools/kaggle_driver.py push-code and re-push this kernel")
+        shutil.copytree(roots[0], CODE)
+os.chdir(CODE)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], check=True)
+print("ready:", open("VERSION").read().strip() if os.path.exists("VERSION") else "code unpacked")
+'''
+
+HF_SECRET = '''\
+# --- HF_TOKEN (read-only) is needed only to download the gated bigcode/the-stack-dedup ---
+try:
+    from kaggle_secrets import UserSecretsClient
+    os.environ["HF_TOKEN"] = UserSecretsClient().get_secret("HF_TOKEN").strip()
+except Exception as e:
+    raise SystemExit("HF_TOKEN secret not available. Open this notebook in the Kaggle editor, "
+                     "Add-ons -> Secrets -> tick HF_TOKEN, then Save Version -> Save & Run All. "
+                     f"({type(e).__name__})")
+print("HF_TOKEN present")
+'''
 
 GPU_GUARD = '''\
 # --- GPU guard: stop before spending quota if Kaggle gave us the wrong accelerator ---
 import torch
 names = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
 print("GPUs:", names)
-if not names:
-    raise SystemExit("No GPU attached. Set Accelerator to 'GPU T4 x2' (Kaggle) or a GPU runtime (Colab).")
-if WORK.startswith("/kaggle") and not all("T4" in n for n in names):
-    raise SystemExit(f"Expected T4 GPUs on Kaggle, got {names}. In the notebook editor set "
-                     "Settings -> Accelerator -> 'GPU T4 x2', save, and run again.")
+if not names or not all("T4" in n for n in names):
+    raise SystemExit(f"Expected T4 GPUs, got {names}. Set Accelerator -> 'GPU T4 x2' and run again.")
 '''
 
-SETUP = f'''\
-# --- Vishalam setup: secrets -> clone private repo -> install ---
-import os, subprocess, sys, time
-T0 = time.time()
-def hours_left(limit=11.2):  # Kaggle kills sessions at 12 h; keep a margin for the final upload
-    return max(0.25, limit - (time.time() - T0) / 3600)
-GITHUB_REPO = "{GITHUB_REPO}"
-DATA_REPO = "{HF_USER}/vishalam-data"
-CKPT_REPO = "{HF_USER}/vishalam"
-WORK = "/kaggle/working" if os.path.isdir("/kaggle/working") else "/content"
-
-def secret(name):
-    try:
-        from kaggle_secrets import UserSecretsClient
-        value = UserSecretsClient().get_secret(name)
-    except ImportError:
-        from google.colab import userdata
-        value = userdata.get(name)
-    return (value or "").strip()  # pasted secrets often carry a stray space/newline
-
-os.environ["HF_TOKEN"] = secret("HF_TOKEN")
-GH_TOKEN = secret("GITHUB_TOKEN")
-
-def github_check():
-    """Explain a failed clone without ever printing the token."""
-    import json, urllib.request, urllib.error
-    req = urllib.request.Request(f"https://api.github.com/repos/{{GITHUB_REPO}}",
-                                 headers={{"Authorization": f"Bearer {{GH_TOKEN}}", "User-Agent": "vishalam"}})
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            info = json.loads(resp.read())
-            return f"API sees the repo (private={{info.get('private')}}); token works for the API"
-    except urllib.error.HTTPError as e:
-        return {{401: "401: GitHub rejects this token (wrong/expired/revoked value in the secret)",
-                403: "403: token valid but not allowed (check 'Contents: Read-only' permission)",
-                404: f"404: token valid but cannot see {{GITHUB_REPO}} (give it access to this repo, "
-                     "resource owner shan3520)"}}.get(e.code, f"HTTP {{e.code}}")
-
-def git(*args):
-    import base64
-    basic = base64.b64encode(f"x-access-token:{{GH_TOKEN}}".encode()).decode()
-    auth = ["-c", f"http.extraHeader=Authorization: Basic {{basic}}"]  # token never in URLs or .git/config
-    r = subprocess.run(["git", *auth, *args], capture_output=True, text=True)
-    out = r.stdout + r.stderr
-    for s in (GH_TOKEN, basic):
-        if s:
-            out = out.replace(s, "***")
-    return r.returncode, out
-
-os.chdir(WORK)
-url = f"https://github.com/{{GITHUB_REPO}}.git"
-if not os.path.isdir("vishalam"):
-    code, out = git("clone", "--depth", "1", url, "vishalam")
-    if code != 0:
-        print(out)
-        print("diagnosis:", github_check(), "| token length:", len(GH_TOKEN))
-        raise SystemExit("git clone failed - see the diagnosis above")
-else:
-    git("-C", "vishalam", "pull", "--ff-only")
-os.chdir(f"{{WORK}}/vishalam")
-subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-r", "requirements.txt"], check=True)
-print("ready:", subprocess.run(["git", "log", "-1", "--oneline"], capture_output=True, text=True).stdout)
-'''
-
-DATA_CELLS = [
-    SETUP,
+DATA1_CELLS = [
+    SETUP, HF_SECRET,
     '''\
-# --- Step 1: tokenizer (only runs once; later sessions download it) ---
-from huggingface_hub import HfApi, hf_hub_download
-api = HfApi()
-api.create_repo(DATA_REPO, repo_type="dataset", private=True, exist_ok=True)
-if api.file_exists(DATA_REPO, "tokenizer.json", repo_type="dataset"):
-    hf_hub_download(DATA_REPO, "tokenizer.json", repo_type="dataset", local_dir=WORK)
-    print("tokenizer already trained - downloaded")
-else:
-    get_ipython().system(f"python -m vishalam.data.pretrain.shard sample --out {WORK}/tok_sample.txt --python-mb 850 --fineweb-mb 150")
-    get_ipython().system(f"python -m vishalam.tokenizer.bpe_train --input {WORK}/tok_sample.txt --vocab-size 50304 --workers 4 --out {WORK}/tokenizer.json")
-    api.upload_file(path_or_fileobj=f"{WORK}/tokenizer.json", path_in_repo="tokenizer.json", repo_id=DATA_REPO, repo_type="dataset")
-    os.remove(f"{WORK}/tok_sample.txt")
+# --- Tokenizer: ~1 GB sample (MIT/Apache/BSD Python + FineWeb-Edu) -> our own 50k BPE ---
+if not os.path.exists(f"{WORK}/tokenizer.json"):
+    get_ipython().system("python -m vishalam.data.pretrain.shard sample --out /tmp/tok_sample.txt --python-mb 850 --fineweb-mb 150")
+    get_ipython().system(f"python -m vishalam.tokenizer.bpe_train --input /tmp/tok_sample.txt --vocab-size 50304 --workers 4 --out {WORK}/tokenizer.json")
+    os.remove("/tmp/tok_sample.txt")
+print("tokenizer:", os.path.getsize(f"{WORK}/tokenizer.json"), "bytes")
 ''',
     '''\
-# --- Step 2: token shards (resumable: re-run this notebook until it prints the target is reached) ---
-get_ipython().system(f"python -m vishalam.data.pretrain.shard build --tokenizer {WORK}/tokenizer.json --repo {DATA_REPO} --work-dir {WORK}/shards --target-tokens 10.5e9 --max-hours {hours_left():.2f} --workers 4")
+# --- Token shards, first half of the source files (~5.3B tokens, ~10.6 GB) ---
+get_ipython().system(f"python -m vishalam.data.pretrain.shard build --tokenizer {WORK}/tokenizer.json "
+                     f"--local-out {WORK} --work-dir /tmp/w --raw-dir /tmp/raw --py-files 0:0.5 --fw-files 0:0.5 "
+                     f"--make-val --target-tokens 5.3e9 --max-hours {hours_left():.2f} --workers 4")
 ''',
 ]
 
+DATA2_CELLS = [
+    SETUP, HF_SECRET,
+    '''\
+# --- Token shards, second half of the source files, same tokenizer as vishalam-data-1 ---
+d1 = inputs_with("tokenizer.json", "vishalam-data-1")
+if not d1:
+    raise SystemExit("vishalam-data-1 output not attached")
+shutil.copy(f"{d1[0]}/tokenizer.json", f"{WORK}/tokenizer.json")
+get_ipython().system(f"python -m vishalam.data.pretrain.shard build --tokenizer {WORK}/tokenizer.json "
+                     f"--local-out {WORK} --work-dir /tmp/w --raw-dir /tmp/raw --py-files 0.5:1.0 --fw-files 0.5:1.0 "
+                     f"--decontam {d1[0]}/decontam.json --target-tokens 5.3e9 --max-hours {hours_left():.2f} --workers 4")
+''',
+]
 
-def pretrain_cells(config: str, max_hours: float) -> list[str]:
+DATA_INPUTS = '''\
+# --- locate the tokenizer and all token-shard dirs among the attached kernel outputs ---
+DATA_DIRS = inputs_with("manifest.json", "vishalam-data-")
+TOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
+print("shard dirs:", DATA_DIRS)
+'''
+
+
+def pretrain_cells(size: str) -> list[str]:
     return [
-        SETUP,
+        SETUP, GPU_GUARD, DATA_INPUTS,
         f'''\
-# --- Pretraining (auto-resumes from the HF checkpoint repo; stops cleanly before the session limit) ---
-# Never run the same model on Kaggle and Colab at the same time: the heartbeat check will refuse.
-import torch
-CONFIG = "{config}"
-MAX_HOURS = round(hours_left({max_hours}), 2)
+# --- Pretraining session: resume from the other ping-pong kernel's output, stop cleanly before 12 h ---
+prev = inputs_with("run/ckpt.pt", "vishalam-pretrain-{size}-")
+resume = f"--resume-from {{prev[0]}}/run" if prev else ""
+print("resuming from:", prev or "scratch")
 n = torch.cuda.device_count()
-print("GPUs:", n, [torch.cuda.get_device_name(i) for i in range(n)])
 launcher = f"torchrun --standalone --nproc_per_node={{n}}" if n > 1 else "python"
-get_ipython().system(f"{{launcher}} -m vishalam.train.pretrain --config {{CONFIG}} --data-repo {{DATA_REPO}} "
-                     f"--data-dir {{WORK}}/shards --ckpt-repo {{CKPT_REPO}} --out {{WORK}}/run --max-hours {{MAX_HOURS}}")
+get_ipython().system(f"{{launcher}} -m vishalam.train.pretrain --config configs/vishalam-{size}.yaml "
+                     f"--data-dirs {{','.join(DATA_DIRS)}} --tokenizer {{TOKENIZER}} {{resume}} "
+                     f"--out {{WORK}}/run --max-hours {{hours_left():.2f}}")
 ''',
         '''\
 # --- Loss curve so far ---
@@ -151,83 +147,65 @@ df.tail()
     ]
 
 
-FETCH = '''\
-# --- fetch shared files from the private HF data repo ---
-from huggingface_hub import HfApi, hf_hub_download
-api = HfApi()
-def fetch(name):
-    return hf_hub_download(DATA_REPO, name, repo_type="dataset", local_dir=WORK)
-def upload(local, name):
-    api.upload_file(path_or_fileobj=local, path_in_repo=name, repo_id=DATA_REPO, repo_type="dataset")
-TOKENIZER = fetch("tokenizer.json")
-'''
-
 AGENTDATA_CELLS = [
-    SETUP, FETCH,
+    SETUP,
     '''\
 # --- Build the M1 agent dataset (CPU; ~6-8 h for 100k episodes on 4 cores) ---
 get_ipython().system(f"python -m vishalam.data.agent.build_m1 --out {WORK}/m1 --n-train 100000 --workers 4")
-for name in ["train.jsonl", "test_seen.jsonl", "test_unseen.jsonl", "stats.json"]:
-    upload(f"{WORK}/m1/{name}", f"m1/{name}")
-print("uploaded m1/*")
 ''',
 ]
 
 REWORD_CELLS = [
-    SETUP, FETCH,
+    SETUP, GPU_GUARD,
     '''\
-# --- Reword ~40% of requests with Qwen2.5-7B-Instruct-AWQ (Apache-2.0) on one T4 ---
+# --- Reword ~40% of requests with Qwen2.5-7B-Instruct-AWQ (Apache-2.0); output tagged ai-reworded ---
 get_ipython().system("pip install -q vllm")
-fetch("m1/train.jsonl")
-# your hand-written "seed" requests (handwritten/requests.jsonl in the repo) are used as style examples
-get_ipython().system(f"python -m vishalam.data.agent.reword_qwen --inp {WORK}/m1/train.jsonl "
+m1 = inputs_with("m1/train.jsonl", "vishalam-agent-data")[0] + "/m1"
+os.makedirs(f"{WORK}/m1", exist_ok=True)
+for f in ["test_seen.jsonl", "test_unseen.jsonl", "stats.json"]:
+    shutil.copy(f"{m1}/{f}", f"{WORK}/m1/{f}")
+get_ipython().system(f"python -m vishalam.data.agent.reword_qwen --inp {m1}/train.jsonl "
                      f"--out {WORK}/m1/train_mixed.jsonl --fraction 0.4")
-upload(f"{WORK}/m1/train_mixed.jsonl", "m1/train_mixed.jsonl")
 ''',
 ]
 
 
-def sft_cells(config: str) -> list[str]:
+def sft_cells(size: str) -> list[str]:
     return [
-        SETUP, FETCH,
+        SETUP, GPU_GUARD,
         f'''\
-# --- Agent fine-tuning (auto-resumes from the HF checkpoint repo) ---
-import torch
-fetch("m1/train_mixed.jsonl")
-extra = ""
-for name in ["m1/self_round1.jsonl", "m1/self_round2.jsonl"]:  # expert-iteration rounds, if any
-    try:
-        extra += f" --episodes {{fetch(name)}}"
-    except Exception:
-        pass
+# --- Agent fine-tuning session (ping-pong resume like pretraining) ---
+TOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
+m1 = inputs_with("m1/train_mixed.jsonl", "vishalam-reword")[0] + "/m1"
+init = inputs_with("run/model.pt", "vishalam-pretrain-{size}-")[0] + "/run/model.pt"
+extra = " ".join(f"--episodes {{d}}/self.jsonl" for d in inputs_with("self.jsonl", "vishalam-eval-m1-{size}"))
+prev = inputs_with("sft/ckpt.pt", "vishalam-sft-m1-{size}-")
+resume = f"--resume-from {{prev[0]}}/sft" if prev else ""
 n = torch.cuda.device_count()
 launcher = f"torchrun --standalone --nproc_per_node={{n}}" if n > 1 else "python"
-get_ipython().system(f"{{launcher}} -m vishalam.train.sft --config {config} --episodes {{WORK}}/m1/train_mixed.jsonl{{extra}} "
-                     f"--tokenizer {{TOKENIZER}} --ckpt-repo {{CKPT_REPO}} --out {{WORK}}/sft --max-hours {{hours_left():.2f}}")
+get_ipython().system(f"{{launcher}} -m vishalam.train.sft --config configs/sft-m1-{size}.yaml --init {{init}} "
+                     f"--episodes {{m1}}/train_mixed.jsonl {{extra}} --tokenizer {{TOKENIZER}} {{resume}} "
+                     f"--out {{WORK}}/sft --max-hours {{hours_left():.2f}}")
 ''',
     ]
 
 
-def eval_cells(model_name: str) -> list[str]:
+def eval_cells(size: str) -> list[str]:
     return [
-        SETUP, FETCH,
+        SETUP, GPU_GUARD,
         f'''\
 # --- Evaluate the agent (generated seen/unseen, hand-written, HumanEval, MBPP) ---
-from huggingface_hub import hf_hub_download
-MODEL = hf_hub_download(CKPT_REPO, "{model_name}/final/model.pt", local_dir=WORK)
-for name in ["m1/test_seen.jsonl", "m1/test_unseen.jsonl"]:
-    fetch(name)
+TOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
+m1 = inputs_with("m1/test_seen.jsonl", "vishalam-reword")[0] + "/m1"
+MODEL = inputs_with("sft/model.pt", "vishalam-sft-m1-{size}-")[0] + "/sft/model.pt"
 get_ipython().system(f"python -m vishalam.eval.run --weights {{MODEL}} --tokenizer {{TOKENIZER}} "
-                     f"--sets test_seen,test_unseen,handwritten,humaneval,mbpp --data {{WORK}}/m1 "
-                     f"--sandbox subprocess --out {{WORK}}/results_{model_name}.json")
-upload(f"{{WORK}}/results_{model_name}.json", "results/{model_name}.json")
+                     f"--sets test_seen,test_unseen,handwritten,humaneval,mbpp --data {{m1}} "
+                     f"--sandbox subprocess --out {{WORK}}/results.json")
 ''',
-        f'''\
-# --- Optional: one expert-iteration round (self-improvement data for the next SFT) ---
-ROUND = 1
-get_ipython().system(f"python -m vishalam.train.expert_iter --weights {{MODEL}} --tokenizer {{TOKENIZER}} "
-                     f"--n-tasks 3000 --samples 4 --out {{WORK}}/self_round{{ROUND}}.jsonl --max-hours {{hours_left():.2f}}")
-upload(f"{{WORK}}/self_round{{ROUND}}.jsonl", f"m1/self_round{{ROUND}}.jsonl")
+        '''\
+# --- One expert-iteration round: self-generated, hidden-test-verified episodes for the next SFT ---
+get_ipython().system(f"python -m vishalam.train.expert_iter --weights {MODEL} --tokenizer {TOKENIZER} "
+                     f"--n-tasks 3000 --samples 4 --out {WORK}/self.jsonl --max-hours {hours_left():.2f}")
 ''',
     ]
 
@@ -237,7 +215,7 @@ def notebook(cells: list[str]) -> dict:
         "cells": [{"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
                    "source": c.splitlines(keepends=True)} for c in cells],
         "metadata": {"kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-                     "language_info": {"name": "python"}, "accelerator": "GPU"},
+                     "language_info": {"name": "python"}},
         "nbformat": 4, "nbformat_minor": 5,
     }
 
@@ -245,8 +223,6 @@ def notebook(cells: list[str]) -> dict:
 def kaggle_kernel(folder: str, title: str, cells: list[str], gpu: bool) -> None:
     d = HERE / folder
     d.mkdir(exist_ok=True)
-    if gpu:
-        cells = [cells[0], GPU_GUARD] + cells[1:]
     (d / "notebook.ipynb").write_text(json.dumps(notebook(cells), indent=1), encoding="utf-8")
     meta = {
         "id": f"{KAGGLE_USER}/{title.lower().replace(' ', '-')}",  # Kaggle wants slug == slugified title
@@ -258,9 +234,9 @@ def kaggle_kernel(folder: str, title: str, cells: list[str], gpu: bool) -> None:
         "enable_gpu": gpu,
         "enable_tpu": False,
         "enable_internet": True,
-        "dataset_sources": [],
+        "dataset_sources": [CODE_DATASET],
         "competition_sources": [],
-        "kernel_sources": [],
+        "kernel_sources": [],  # filled per push by tools/kaggle_driver.py
         "model_sources": [],
     }
     if gpu:
@@ -269,21 +245,25 @@ def kaggle_kernel(folder: str, title: str, cells: list[str], gpu: bool) -> None:
 
 
 def main() -> None:
-    kaggle_kernel("kaggle_data", "vishalam data", DATA_CELLS, gpu=False)
+    import shutil
+
+    for old in HERE.iterdir():  # regenerate from scratch (removes kernels of the old HF design)
+        if old.is_dir():
+            shutil.rmtree(old)
+    for stale in HERE.glob("*.ipynb"):
+        stale.unlink()
+    kaggle_kernel("vishalam_data_1", "vishalam data 1", DATA1_CELLS, gpu=False)
+    kaggle_kernel("vishalam_data_2", "vishalam data 2", DATA2_CELLS, gpu=False)
     for size in ["30m", "125m", "350m"]:
-        kaggle_kernel(f"kaggle_pretrain_{size}", f"vishalam pretrain {size}",
-                      pretrain_cells(f"configs/vishalam-{size}.yaml", 11.2), gpu=True)
-    kaggle_kernel("kaggle_agentdata", "vishalam agent data m1", AGENTDATA_CELLS, gpu=False)
-    kaggle_kernel("kaggle_reword", "vishalam reword m1", REWORD_CELLS, gpu=True)
+        for side in "ab":
+            kaggle_kernel(f"vishalam_pretrain_{size}_{side}", f"vishalam pretrain {size} {side}",
+                          pretrain_cells(size), gpu=True)
+    kaggle_kernel("vishalam_agent_data", "vishalam agent data", AGENTDATA_CELLS, gpu=False)
+    kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
     for size in ["125m", "350m"]:
-        kaggle_kernel(f"kaggle_sft_{size}", f"vishalam sft m1 {size}", sft_cells(f"configs/sft-m1-{size}.yaml"), gpu=True)
-        kaggle_kernel(f"kaggle_eval_{size}", f"vishalam eval m1 {size}", eval_cells(f"vishalam-{size}-agent-m1"), gpu=True)
-    colab = HERE / "colab_pretrain.ipynb"
-    cells = pretrain_cells("configs/vishalam-350m.yaml", 11.0)
-    cells[1] = cells[1].replace('CONFIG = "configs/vishalam-350m.yaml"',
-                                'CONFIG = "configs/vishalam-350m.yaml"  # change to 30m / 125m as needed')
-    cells = [cells[0], GPU_GUARD] + cells[1:]
-    colab.write_text(json.dumps(notebook(cells), indent=1), encoding="utf-8")
+        for side in "ab":
+            kaggle_kernel(f"vishalam_sft_m1_{size}_{side}", f"vishalam sft m1 {size} {side}", sft_cells(size), gpu=True)
+        kaggle_kernel(f"vishalam_eval_m1_{size}", f"vishalam eval m1 {size}", eval_cells(size), gpu=True)
     print("notebooks written")
 
 

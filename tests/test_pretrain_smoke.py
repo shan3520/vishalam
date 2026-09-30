@@ -1,6 +1,7 @@
 """End-to-end: tokenizer -> shards -> pretrain loop -> checkpoint -> exact resume."""
 import csv
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -52,7 +53,8 @@ def setup(tmp_path_factory):
 
 
 def run(cfg, shards, out, *extra):
-    cmd = [sys.executable, "-m", "vishalam.train.pretrain", "--config", str(cfg), "--data-dir", str(shards),
+    data = ["--data-dirs", shards] if isinstance(shards, str) else ["--data-dir", str(shards)]
+    cmd = [sys.executable, "-m", "vishalam.train.pretrain", "--config", str(cfg), *data,
            "--out", str(out), "--max-steps", "40", *extra]
     env = {**__import__("os").environ, "CUDA_VISIBLE_DEVICES": "-1"}  # deterministic CPU run
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env)
@@ -79,3 +81,29 @@ def test_loss_decreases_and_resume_is_exact(setup):
     resumed = losses(tmp / "resumed")
     for s in (30, 40):
         assert abs(resumed[s] - straight[s]) < 1e-3, (s, resumed[s], straight[s])
+
+
+def test_kaggle_ping_pong_with_split_shard_dirs(setup):
+    """Shards spread over two read-only 'kernel output' dirs; session A pauses, session B (new
+    output dir) resumes from A's dir. Must match one uninterrupted run exactly."""
+    tmp, shards, cfg = setup
+    arr = np.fromfile(shards / "train_00000.bin", dtype=np.uint16)
+    d1, d2 = tmp / "data-1", tmp / "data-2"
+    for d, part, has_val in [(d1, arr[: len(arr) // 2], True), (d2, arr[len(arr) // 2 :], False)]:
+        d.mkdir()
+        part.tofile(d / "train_00000.bin")  # same file name in both dirs: paths must stay distinct
+        m = {"train": [{"name": "train_00000.bin", "tokens": len(part)}], "val": []}
+        if has_val:
+            shutil.copy(shards / "val_00000.bin", d / "val_00000.bin")
+            m["val"] = [{"name": "val_00000.bin", "tokens": int(np.fromfile(d / "val_00000.bin", dtype=np.uint16).size)}]
+        (d / "manifest.json").write_text(json.dumps(m))
+    dirs = f"{d1},{d2}"
+    run(cfg, dirs, tmp / "pp_straight")
+    straight = losses(tmp / "pp_straight")
+    run(cfg, dirs, tmp / "pp_a", "--stop-at-step", "20")
+    out = run(cfg, dirs, tmp / "pp_b", "--resume-from", str(tmp / "pp_a"))
+    assert "resumed from" in out
+    b = losses(tmp / "pp_b")
+    assert min(b) == 1  # log.csv carried over from session A: one continuous curve
+    for s in (30, 40):
+        assert abs(b[s] - straight[s]) < 1e-3, (s, b[s], straight[s])

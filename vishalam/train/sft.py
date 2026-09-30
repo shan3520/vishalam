@@ -86,6 +86,7 @@ def main() -> None:
     ap.add_argument("--tokenizer", required=True)
     ap.add_argument("--init", default=None, help="pretrained weights (model.pt); overrides config")
     ap.add_argument("--ckpt-repo", default=None)
+    ap.add_argument("--resume-from", default=None, help="dir with ckpt.pt + log.csv from a previous session")
     ap.add_argument("--out", required=True)
     ap.add_argument("--max-hours", type=float, default=1e9)
     ap.add_argument("--max-steps", type=int, default=None)
@@ -171,6 +172,10 @@ def main() -> None:
             dist.barrier()
         if (out / "_hub" / name / "latest" / "ckpt.pt").exists():
             ckpt_path = out / "_hub" / name / "latest" / "ckpt.pt"
+    if not ckpt_path.exists() and args.resume_from and (Path(args.resume_from) / "ckpt.pt").exists():
+        ckpt_path = Path(args.resume_from) / "ckpt.pt"
+        if master and (Path(args.resume_from) / "log.csv").exists() and not (out / "log.csv").exists():
+            shutil.copy(Path(args.resume_from) / "log.csv", out / "log.csv")
     step = 0
     if ckpt_path.exists():
         step = load_checkpoint(ckpt_path, model, optimizer, scaler, map_location=device)["step"]
