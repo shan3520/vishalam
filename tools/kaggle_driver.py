@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -44,7 +45,9 @@ def user() -> str:
 
 
 def kaggle(*args: str, check: bool = True) -> str:
-    r = subprocess.run([kaggle_exe(), *args], capture_output=True, text=True, encoding="utf-8", errors="replace")
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}  # Windows 'charmap' crash on logs
+    r = subprocess.run([kaggle_exe(), *args], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env=env)
     out = SECRET_RX.sub("[REDACTED]", r.stdout + r.stderr)
     if check and r.returncode != 0:
         raise SystemExit(f"kaggle {' '.join(args)} failed:\n{out}")
