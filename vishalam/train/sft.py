@@ -16,6 +16,7 @@ import json
 import math
 import os
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -176,6 +177,10 @@ def main() -> None:
         if master:
             print(f"resumed at step {step}", flush=True)
     if ddp:
+        dist.barrier()  # every rank has loaded before the downloaded copies are removed
+    if master:
+        shutil.rmtree(out / "_hub", ignore_errors=True)
+    if ddp:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
 
     log_path = out / "log.csv"
@@ -214,7 +219,7 @@ def main() -> None:
             save_weights(out / "model.pt", model, mcfg.to_dict())
             files.append((out / "model.pt", f"{name}/final/model.pt"))
         if hub:
-            hub.push_async(files, f"{name} step {step}")
+            hub.push_async(files, f"{name} step {step}", squash=True)
 
     t_start, last_save = time.time(), time.time()
     model.train()

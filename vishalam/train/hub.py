@@ -29,7 +29,13 @@ class HubSync:
             commit_message=message,
         )
 
-    def push_async(self, files: list[tuple[Path, str]], message: str) -> None:
+    def squash(self) -> None:
+        """Drop git history so overwritten checkpoints stop counting toward the ~100 GB private
+        storage of a free HF account. The current files (latest + final weights) are kept."""
+        self.api.super_squash_history(self.repo_id, repo_type=self.repo_type,
+                                      commit_message="squash: keep only current checkpoint files")
+
+    def push_async(self, files: list[tuple[Path, str]], message: str, squash: bool = False) -> None:
         """Upload in a background thread; waits for any previous upload first."""
         self.wait()
 
@@ -37,6 +43,8 @@ class HubSync:
             try:
                 for local, remote in files:
                     self.push(local, remote, message)
+                if squash:
+                    self.squash()
             except Exception as e:  # keep training alive; report on next wait()
                 self.last_error = e
 

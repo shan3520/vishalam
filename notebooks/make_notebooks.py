@@ -39,7 +39,10 @@ if WORK.startswith("/kaggle") and not all("T4" in n for n in names):
 
 SETUP = f'''\
 # --- Vishalam setup: secrets -> clone private repo -> install ---
-import os, subprocess, sys
+import os, subprocess, sys, time
+T0 = time.time()
+def hours_left(limit=11.2):  # Kaggle kills sessions at 12 h; keep a margin for the final upload
+    return max(0.25, limit - (time.time() - T0) / 3600)
 GITHUB_REPO = "{GITHUB_REPO}"
 DATA_REPO = "{HF_USER}/vishalam-data"
 CKPT_REPO = "{HF_USER}/vishalam"
@@ -89,7 +92,7 @@ else:
 ''',
     '''\
 # --- Step 2: token shards (resumable: re-run this notebook until it prints the target is reached) ---
-get_ipython().system(f"python -m vishalam.data.pretrain.shard build --tokenizer {WORK}/tokenizer.json --repo {DATA_REPO} --work-dir {WORK}/shards --target-tokens 10.5e9 --max-hours 11 --workers 4")
+get_ipython().system(f"python -m vishalam.data.pretrain.shard build --tokenizer {WORK}/tokenizer.json --repo {DATA_REPO} --work-dir {WORK}/shards --target-tokens 10.5e9 --max-hours {hours_left():.2f} --workers 4")
 ''',
 ]
 
@@ -102,7 +105,7 @@ def pretrain_cells(config: str, max_hours: float) -> list[str]:
 # Never run the same model on Kaggle and Colab at the same time: the heartbeat check will refuse.
 import torch
 CONFIG = "{config}"
-MAX_HOURS = {max_hours}
+MAX_HOURS = round(hours_left({max_hours}), 2)
 n = torch.cuda.device_count()
 print("GPUs:", n, [torch.cuda.get_device_name(i) for i in range(n)])
 launcher = f"torchrun --standalone --nproc_per_node={{n}}" if n > 1 else "python"
@@ -173,7 +176,7 @@ for name in ["m1/self_round1.jsonl", "m1/self_round2.jsonl"]:  # expert-iteratio
 n = torch.cuda.device_count()
 launcher = f"torchrun --standalone --nproc_per_node={{n}}" if n > 1 else "python"
 get_ipython().system(f"{{launcher}} -m vishalam.train.sft --config {config} --episodes {{WORK}}/m1/train_mixed.jsonl{{extra}} "
-                     f"--tokenizer {{TOKENIZER}} --ckpt-repo {{CKPT_REPO}} --out {{WORK}}/sft --max-hours 11.3")
+                     f"--tokenizer {{TOKENIZER}} --ckpt-repo {{CKPT_REPO}} --out {{WORK}}/sft --max-hours {{hours_left():.2f}}")
 ''',
     ]
 
@@ -196,7 +199,7 @@ upload(f"{{WORK}}/results_{model_name}.json", "results/{model_name}.json")
 # --- Optional: one expert-iteration round (self-improvement data for the next SFT) ---
 ROUND = 1
 get_ipython().system(f"python -m vishalam.train.expert_iter --weights {{MODEL}} --tokenizer {{TOKENIZER}} "
-                     f"--n-tasks 3000 --samples 4 --out {{WORK}}/self_round{{ROUND}}.jsonl --max-hours 10")
+                     f"--n-tasks 3000 --samples 4 --out {{WORK}}/self_round{{ROUND}}.jsonl --max-hours {{hours_left():.2f}}")
 upload(f"{{WORK}}/self_round{{ROUND}}.jsonl", f"m1/self_round{{ROUND}}.jsonl")
 ''',
     ]
@@ -242,7 +245,7 @@ def main() -> None:
     kaggle_kernel("kaggle_data", "vishalam data", DATA_CELLS, gpu=False)
     for size in ["30m", "125m", "350m"]:
         kaggle_kernel(f"kaggle_pretrain_{size}", f"vishalam pretrain {size}",
-                      pretrain_cells(f"configs/vishalam-{size}.yaml", 11.3), gpu=True)
+                      pretrain_cells(f"configs/vishalam-{size}.yaml", 11.2), gpu=True)
     kaggle_kernel("kaggle_agentdata", "vishalam agent data m1", AGENTDATA_CELLS, gpu=False)
     kaggle_kernel("kaggle_reword", "vishalam reword m1", REWORD_CELLS, gpu=True)
     for size in ["125m", "350m"]:

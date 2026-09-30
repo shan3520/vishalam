@@ -156,8 +156,13 @@ def main() -> None:
     if ckpt_path.exists():
         state = load_checkpoint(ckpt_path, model, optimizer, scaler, map_location=device)
         step = state["step"]
+        del state
         if master:
             print(f"resumed from {ckpt_path} at step {step}", flush=True)
+    if ddp:
+        dist.barrier()  # every rank has loaded before the downloaded copy is removed
+    if master:
+        shutil.rmtree(out / "_hub", ignore_errors=True)  # keep /kaggle/working small
     if ddp:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
 
@@ -191,7 +196,7 @@ def main() -> None:
             save_weights(out / "model.pt", model, mcfg.to_dict())
             files.append((out / "model.pt", f"{name}/final/model.pt"))
         if hub:
-            hub.push_async(files, f"{name} step {step}")
+            hub.push_async(files, f"{name} step {step}", squash=True)
         print(f"saved checkpoint at step {step}", flush=True)
 
     @torch.no_grad()
