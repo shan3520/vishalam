@@ -107,3 +107,21 @@ def test_kaggle_ping_pong_with_split_shard_dirs(setup):
     assert min(b) == 1  # log.csv carried over from session A: one continuous curve
     for s in (30, 40):
         assert abs(b[s] - straight[s]) < 1e-3, (s, b[s], straight[s])
+
+
+def test_muon_training_and_exact_resume(setup):
+    tmp, shards, cfg = setup
+    c = yaml.safe_load(cfg.read_text())
+    c["train"].update(optimizer="muon", muon_lr=0.02, muon_momentum=0.95)
+    mcfg = tmp / "muon.yaml"
+    mcfg.write_text(yaml.safe_dump(c))
+    out = run(mcfg, shards, tmp / "m_straight")
+    assert "Muon(" in out and "AdamW(" in out
+    straight = losses(tmp / "m_straight")
+    assert straight[40] < straight[1] - 1.0, straight
+    run(mcfg, shards, tmp / "m_resumed", "--stop-at-step", "20")
+    out = run(mcfg, shards, tmp / "m_resumed")
+    assert "resumed from" in out
+    resumed = losses(tmp / "m_resumed")
+    for s in (30, 40):
+        assert abs(resumed[s] - straight[s]) < 1e-3, (s, resumed[s], straight[s])

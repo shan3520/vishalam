@@ -22,12 +22,34 @@ def unwrap(model: torch.nn.Module) -> torch.nn.Module:
             return model
 
 
+def _opt_state(optimizer):
+    """One optimizer (or a list of one) is saved exactly as before; several are saved as a list."""
+    if isinstance(optimizer, (list, tuple)):
+        states = [o.state_dict() for o in optimizer]
+        return states[0] if len(states) == 1 else states
+    return optimizer.state_dict()
+
+
+def _load_opt_state(optimizer, saved) -> None:
+    opts = list(optimizer) if isinstance(optimizer, (list, tuple)) else [optimizer]
+    saved = saved if isinstance(saved, list) else [saved]
+    if len(saved) != len(opts):
+        raise ValueError(f"checkpoint has {len(saved)} optimizer(s), this run builds {len(opts)} "
+                         "(did the optimizer setting change between sessions?)")
+    for opt, sd in zip(opts, saved):
+        base = [g.get("base_lr") for g in opt.param_groups]
+        opt.load_state_dict(sd)
+        for g, b in zip(opt.param_groups, base):  # older checkpoints predate base_lr
+            if b is not None:
+                g["base_lr"] = b
+
+
 def save_checkpoint(path: str | Path, model, optimizer, scaler, step: int, extra: dict) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     state = {
         "model": unwrap(model).state_dict(),
-        "optimizer": optimizer.state_dict(),
+        "optimizer": _opt_state(optimizer),
         "scaler": scaler.state_dict() if scaler is not None else None,
         "step": step,
         "extra": extra,
@@ -48,7 +70,7 @@ def load_checkpoint(path: str | Path, model, optimizer=None, scaler=None, map_lo
     state = torch.load(path, map_location=map_location, weights_only=False)
     unwrap(model).load_state_dict(state["model"])
     if optimizer is not None:
-        optimizer.load_state_dict(state["optimizer"])
+        _load_opt_state(optimizer, state["optimizer"])
     if scaler is not None and state.get("scaler") is not None:
         scaler.load_state_dict(state["scaler"])
     rng = state.get("rng") or {}

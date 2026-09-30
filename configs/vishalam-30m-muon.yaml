@@ -1,0 +1,29 @@
+# A/B pilot: identical to vishalam-30m (data, tokens, schedule, eval) but Muon for hidden matrices.
+name: vishalam-30m-muon
+model:
+  vocab_size: 50304
+  d_model: 384
+  n_layers: 6
+  n_heads: 6
+  ffn_dim: 1024
+  max_seq_len: 4096
+train:
+  seq_len: 4096
+  micro_batch: 8          # per GPU (chunked loss keeps logits memory small)
+  global_batch_seqs: 64   # 262k tokens per optimizer step
+  total_tokens: 500_000_000
+  lr: 1.0e-3               # AdamW LR for embedding/tied head + norms (same as the AdamW pilot)
+  optimizer: muon
+  muon_lr: 0.02
+  muon_momentum: 0.95
+  muon_weight_decay: 0.0
+  min_lr_ratio: 0.1
+  warmup_steps: 200
+  weight_decay: 0.1
+  grad_clip: 1.0
+  z_loss: 1.0e-4
+  grad_checkpointing: false
+  compile: true            # torch.compile on CUDA; falls back to eager automatically
+  eval_every: 250
+  eval_batches: 20
+  save_every_minutes: 30

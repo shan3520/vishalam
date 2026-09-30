@@ -53,6 +53,38 @@ def build_optimizer(model: torch.nn.Module, lr: float, weight_decay: float, devi
     return torch.optim.AdamW(groups, lr=lr, betas=(0.9, 0.95), eps=1e-8, **kwargs)
 
 
+def build_optimizers(model: torch.nn.Module, tcfg: dict, device_type: str) -> list[torch.optim.Optimizer]:
+    """Default: one AdamW (unchanged behaviour). With `optimizer: muon`: Muon for the transformer's
+    hidden 2-D matrices, AdamW for the embedding/tied head and the 1-D norm weights.
+    Every param group gets `base_lr`; the schedule multiplies it by a factor each step."""
+    if tcfg.get("optimizer", "adamw") != "muon":
+        opts = [build_optimizer(model, tcfg["lr"], tcfg["weight_decay"], device_type)]
+    else:
+        from vishalam.train.muon import Muon
+
+        qkv, hidden, adam_decay, adam_no_decay = [], [], [], []
+        for name, p in model.named_parameters():
+            if not p.requires_grad:
+                continue
+            if name.startswith("blocks.") and p.dim() == 2:
+                (qkv if name.endswith("attn.qkv.weight") else hidden).append(p)
+            elif p.dim() >= 2:
+                adam_decay.append(p)       # embedding (tied with the output head)
+            else:
+                adam_no_decay.append(p)    # RMSNorm weights
+        muon = Muon([{"params": hidden}, {"params": qkv, "split": 3}], lr=tcfg["muon_lr"],
+                    momentum=tcfg.get("muon_momentum", 0.95), weight_decay=tcfg.get("muon_weight_decay", 0.0))
+        kwargs = {"fused": True} if device_type == "cuda" else {}
+        adam = torch.optim.AdamW([{"params": adam_decay, "weight_decay": tcfg["weight_decay"]},
+                                  {"params": adam_no_decay, "weight_decay": 0.0}],
+                                 lr=tcfg["lr"], betas=(0.9, 0.95), eps=1e-8, **kwargs)
+        opts = [muon, adam]
+    for opt in opts:
+        for g in opt.param_groups:
+            g["base_lr"] = g["lr"]
+    return opts
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -108,7 +140,9 @@ def main() -> None:
     model.grad_checkpointing = bool(tcfg.get("grad_checkpointing", False))
     if master:
         print(f"{name}: {unwrap(model).num_params() / 1e6:.1f}M params, device={device}x{world}, amp={amp_dtype}", flush=True)
-    optimizer = build_optimizer(model, tcfg["lr"], tcfg["weight_decay"], device_type)
+    optimizers = build_optimizers(model, tcfg, device_type)
+    if master:
+        print("optimizers:", " + ".join(f"{type(o).__name__}({sum(p.numel() for g in o.param_groups for p in g['params']) / 1e6:.1f}M)" for o in optimizers), flush=True)
 
     # ---- data ----
     if args.data_dirs:
@@ -169,7 +203,7 @@ def main() -> None:
                 shutil.copy(prev / "log.csv", out / "log.csv")  # one continuous loss curve
     step = 0
     if ckpt_path.exists():
-        state = load_checkpoint(ckpt_path, model, optimizer, scaler, map_location=device)
+        state = load_checkpoint(ckpt_path, model, optimizers, scaler, map_location=device)
         step = state["step"]
         del state
         if master:
@@ -212,7 +246,7 @@ def main() -> None:
     def save(final: bool = False, running: bool = True):
         if not master:
             return
-        save_checkpoint(out / "ckpt.pt", model, optimizer, scaler,
+        save_checkpoint(out / "ckpt.pt", model, optimizers, scaler,
                         step, {"name": name, "tokens": step * global_batch * seq_len})
         files = [(out / "ckpt.pt", f"{name}/latest/ckpt.pt"), (log_path, f"{name}/latest/log.csv"),
                  (heartbeat(running), f"{name}/latest/heartbeat.json")]
@@ -243,9 +277,11 @@ def main() -> None:
     model.train()
     while step < total_steps:
         t0 = time.time()
-        lr = lr_at(step, total_steps, tcfg["lr"], tcfg["warmup_steps"], tcfg["min_lr_ratio"])
-        for g in optimizer.param_groups:
-            g["lr"] = lr
+        factor = lr_at(step, total_steps, 1.0, tcfg["warmup_steps"], tcfg["min_lr_ratio"])
+        lr = factor * tcfg["lr"]  # logged value: the AdamW LR (Muon groups scale their own base_lr)
+        for opt in optimizers:
+            for g in opt.param_groups:
+                g["lr"] = g["base_lr"] * factor
         batches = loader.step_batches(step, device)
 
         def forward_backward(m) -> torch.Tensor:
@@ -269,13 +305,17 @@ def main() -> None:
             if master:
                 print(f"torch.compile failed ({type(e).__name__}: {str(e)[:200]}); falling back to eager", flush=True)
             model, compiled = eager_model, False
-            optimizer.zero_grad(set_to_none=True)
+            for opt in optimizers:
+                opt.zero_grad(set_to_none=True)
             loss_sum = forward_backward(model)
-        scaler.unscale_(optimizer)
+        for opt in optimizers:
+            scaler.unscale_(opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg["grad_clip"])
-        scaler.step(optimizer)  # skipped automatically if grads are inf/nan
+        for opt in optimizers:
+            scaler.step(opt)  # skipped automatically if grads are inf/nan
         scaler.update()
-        optimizer.zero_grad(set_to_none=True)
+        for opt in optimizers:
+            opt.zero_grad(set_to_none=True)
         step += 1
 
         if ddp:

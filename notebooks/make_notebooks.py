@@ -258,6 +258,8 @@ def main() -> None:
         for side in "ab":
             kaggle_kernel(f"vishalam_pretrain_{size}_{side}", f"vishalam pretrain {size} {side}",
                           pretrain_cells(size), gpu=True)
+    # A/B pilot: same data/tokens/schedule as vishalam-pretrain-30m-a, but Muon for hidden matrices
+    kaggle_kernel("vishalam_pretrain_30m_muon", "vishalam pretrain 30m muon", pretrain_cells("30m-muon"), gpu=True)
     kaggle_kernel("vishalam_agent_data", "vishalam agent data", AGENTDATA_CELLS, gpu=False)
     kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
     for size in ["125m", "350m"]:
