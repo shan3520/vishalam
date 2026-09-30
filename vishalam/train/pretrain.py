@@ -262,8 +262,9 @@ def main() -> None:
         if vbatches and (step % tcfg["eval_every"] == 0 or step == total_steps):
             val = f"{evaluate():.4f}"
         if master and (step % 10 == 0 or step == 1 or val):
+            mem = f" mem {torch.cuda.max_memory_allocated() / 2**30:.1f}GB" if device_type == "cuda" else ""
             print(f"step {step}/{total_steps} loss {loss_sum.item():.4f} {('val ' + val) if val else ''} "
-                  f"lr {lr:.2e} gnorm {grad_norm.item():.2f} {tok_s:,.0f} tok/s", flush=True)
+                  f"lr {lr:.2e} gnorm {grad_norm.item():.2f} {tok_s:,.0f} tok/s{mem}", flush=True)
             log([step, step * global_batch * seq_len, f"{loss_sum.item():.4f}", val, f"{lr:.3e}",
                  f"{grad_norm.item():.3f}", f"{tok_s:.0f}", scaler.get_scale() if scaler.is_enabled() else 1])
 

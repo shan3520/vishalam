@@ -9,7 +9,7 @@ model:
   max_seq_len: 4096
 train:
   seq_len: 4096
-  micro_batch: 4
+  micro_batch: 2
   global_batch_seqs: 128  # 524k tokens per step
   total_tokens: 2_500_000_000
   lr: 6.0e-4

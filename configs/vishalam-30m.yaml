@@ -9,7 +9,7 @@ model:
   max_seq_len: 4096
 train:
   seq_len: 4096
-  micro_batch: 8          # per GPU
+  micro_batch: 2          # per GPU (full-vocab fp32 logits: 8 would OOM a 16 GB T4)
   global_batch_seqs: 64   # 262k tokens per optimizer step
   total_tokens: 500_000_000
   lr: 1.0e-3
