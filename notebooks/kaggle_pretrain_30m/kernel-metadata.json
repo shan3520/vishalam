@@ -1,14 +1,16 @@
 {
- "id": "KAGGLE_USERNAME/kaggle-pretrain-30m",
+ "id": "KAGGLE_USERNAME/vishalam-pretrain-30m",
  "title": "vishalam pretrain 30m",
  "code_file": "notebook.ipynb",
  "language": "python",
  "kernel_type": "notebook",
  "is_private": true,
  "enable_gpu": true,
+ "enable_tpu": false,
  "enable_internet": true,
  "dataset_sources": [],
  "competition_sources": [],
  "kernel_sources": [],
+ "model_sources": [],
  "machine_shape": "NvidiaTeslaT4"
 }

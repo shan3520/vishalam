@@ -12,9 +12,30 @@ from pathlib import Path
 
 GITHUB_REPO = "shan3520/vishalam"
 HF_USER = "shantanu3520"
-KAGGLE_USER = "KAGGLE_USERNAME"  # replaced by setup (see README) once kaggle.json exists
-
 HERE = Path(__file__).parent
+
+
+def _kaggle_user() -> str:
+    """Kaggle username from ~/.kaggle/kaggle.json (only the username field is read)."""
+    try:
+        return json.loads((Path.home() / ".kaggle" / "kaggle.json").read_text())["username"]
+    except (OSError, KeyError, ValueError):
+        return "KAGGLE_USERNAME"
+
+
+KAGGLE_USER = _kaggle_user()
+
+GPU_GUARD = '''\
+# --- GPU guard: stop before spending quota if Kaggle gave us the wrong accelerator ---
+import torch
+names = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]
+print("GPUs:", names)
+if not names:
+    raise SystemExit("No GPU attached. Set Accelerator to 'GPU T4 x2' (Kaggle) or a GPU runtime (Colab).")
+if WORK.startswith("/kaggle") and not all("T4" in n for n in names):
+    raise SystemExit(f"Expected T4 GPUs on Kaggle, got {names}. In the notebook editor set "
+                     "Settings -> Accelerator -> 'GPU T4 x2', save, and run again.")
+'''
 
 SETUP = f'''\
 # --- Vishalam setup: secrets -> clone private repo -> install ---
@@ -194,19 +215,23 @@ def notebook(cells: list[str]) -> dict:
 def kaggle_kernel(folder: str, title: str, cells: list[str], gpu: bool) -> None:
     d = HERE / folder
     d.mkdir(exist_ok=True)
+    if gpu:
+        cells = [cells[0], GPU_GUARD] + cells[1:]
     (d / "notebook.ipynb").write_text(json.dumps(notebook(cells), indent=1), encoding="utf-8")
     meta = {
-        "id": f"{KAGGLE_USER}/{folder.replace('_', '-')}",
+        "id": f"{KAGGLE_USER}/{title.lower().replace(' ', '-')}",  # Kaggle wants slug == slugified title
         "title": title,
         "code_file": "notebook.ipynb",
         "language": "python",
         "kernel_type": "notebook",
         "is_private": True,
         "enable_gpu": gpu,
+        "enable_tpu": False,
         "enable_internet": True,
         "dataset_sources": [],
         "competition_sources": [],
         "kernel_sources": [],
+        "model_sources": [],
     }
     if gpu:
         meta["machine_shape"] = "NvidiaTeslaT4"  # T4 x2
@@ -227,6 +252,7 @@ def main() -> None:
     cells = pretrain_cells("configs/vishalam-350m.yaml", 11.0)
     cells[1] = cells[1].replace('CONFIG = "configs/vishalam-350m.yaml"',
                                 'CONFIG = "configs/vishalam-350m.yaml"  # change to 30m / 125m as needed')
+    cells = [cells[0], GPU_GUARD] + cells[1:]
     colab.write_text(json.dumps(notebook(cells), indent=1), encoding="utf-8")
     print("notebooks written")
 
