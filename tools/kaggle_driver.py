@@ -104,6 +104,19 @@ def push(folder: str, sources: list[str]) -> str:
     d = BUILD / "kernels" / src.name
     shutil.rmtree(d, ignore_errors=True)
     shutil.copytree(src, d)
+    # Stale-code guard: Kaggle can attach the previous vishalam-code version for a few minutes after an
+    # upload. The notebook checks VERSION right after unpacking and stops before using any GPU time.
+    sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+    nb = json.loads((d / "notebook.ipynb").read_text(encoding="utf-8"))
+    guard = ('import os\n'
+             f'EXPECTED_VERSION = "{sha}"\n'
+             'got = open("/tmp/vishalam/VERSION").read().strip() if os.path.exists("/tmp/vishalam/VERSION") else "?"\n'
+             'if got != EXPECTED_VERSION:\n'
+             '    raise SystemExit(f"stale code dataset: got {got}, expected {EXPECTED_VERSION} - re-push in a few minutes")\n'
+             'print("code version OK:", got)\n')
+    nb["cells"].insert(1, {"cell_type": "code", "execution_count": None, "metadata": {}, "outputs": [],
+                           "source": guard.splitlines(keepends=True)})
+    (d / "notebook.ipynb").write_text(json.dumps(nb, indent=1), encoding="utf-8")
     meta = json.loads((d / "kernel-metadata.json").read_text())
     meta["kernel_sources"] = [s if "/" in s else f"{user()}/{slug_of(s)}" for s in sources]
     (d / "kernel-metadata.json").write_text(json.dumps(meta, indent=1))
