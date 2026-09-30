@@ -19,6 +19,7 @@ train:
   grad_clip: 1.0
   z_loss: 1.0e-4
   grad_checkpointing: false
+  compile: true            # torch.compile on CUDA; falls back to eager automatically
   eval_every: 250
   eval_batches: 20
   save_every_minutes: 30

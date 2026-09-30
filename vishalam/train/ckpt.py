@@ -10,7 +10,16 @@ import torch
 
 
 def unwrap(model: torch.nn.Module) -> torch.nn.Module:
-    return model.module if hasattr(model, "module") else model
+    """Peel torch.compile (`_orig_mod`) and DDP (`module`) wrappers, in any order, so checkpoints
+    always hold the plain model's parameter names."""
+    while True:
+        if hasattr(model, "_orig_mod"):
+            model = model._orig_mod
+        elif isinstance(model, torch.nn.parallel.DistributedDataParallel) or (
+                hasattr(model, "module") and isinstance(getattr(model, "module"), torch.nn.Module)):
+            model = model.module
+        else:
+            return model
 
 
 def save_checkpoint(path: str | Path, model, optimizer, scaler, step: int, extra: dict) -> Path:

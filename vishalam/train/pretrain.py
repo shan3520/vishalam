@@ -180,6 +180,15 @@ def main() -> None:
         shutil.rmtree(out / "_hub", ignore_errors=True)  # keep /kaggle/working small
     if ddp:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank])
+    eager_model = model  # DDP (or plain) module: used for eval, no_sync and as the compile fallback
+    compiled = False
+    if tcfg.get("compile") and device_type == "cuda":
+        try:
+            model = torch.compile(model)
+            compiled = True
+        except Exception as e:  # e.g. no Triton on this platform
+            if master:
+                print(f"torch.compile unavailable ({type(e).__name__}: {e}); training eagerly", flush=True)
 
     # ---- logging ----
     log_path = out / "log.csv"
@@ -216,13 +225,13 @@ def main() -> None:
 
     @torch.no_grad()
     def evaluate() -> float:
-        model.eval()
+        eager_model.eval()
         losses = []
         for x, y in vbatches:
             with autocast():
-                _, loss = model(x, y)
+                _, loss = eager_model(x, y)
             losses.append(loss.float())
-        model.train()
+        eager_model.train()
         v = torch.stack(losses).mean() if losses else torch.tensor(float("nan"), device=device)
         if ddp:
             dist.all_reduce(v, op=dist.ReduceOp.AVG)
@@ -238,15 +247,30 @@ def main() -> None:
         for g in optimizer.param_groups:
             g["lr"] = lr
         batches = loader.step_batches(step, device)
-        loss_sum = torch.zeros((), device=device)
-        for i, (x, y) in enumerate(batches):
-            sync = contextlib.nullcontext() if (not ddp or i == len(batches) - 1) else model.no_sync()
-            with sync:
-                with autocast():
-                    _, loss = model(x, y, z_loss=tcfg.get("z_loss", 0.0))
-                loss = loss / len(batches)
-                scaler.scale(loss).backward()
-            loss_sum += loss.detach()
+
+        def forward_backward(m) -> torch.Tensor:
+            total = torch.zeros((), device=device)
+            for i, (x, y) in enumerate(batches):
+                sync = contextlib.nullcontext() if (not ddp or i == len(batches) - 1) else eager_model.no_sync()
+                with sync:
+                    with autocast():
+                        _, loss = m(x, y, z_loss=tcfg.get("z_loss", 0.0))
+                    loss = loss / len(batches)
+                    scaler.scale(loss).backward()
+                total += loss.detach()
+            return total
+
+        try:
+            loss_sum = forward_backward(model)
+        except Exception as e:
+            if not compiled:
+                raise
+            # compiled graphs failed on this machine: drop back to eager and redo this step
+            if master:
+                print(f"torch.compile failed ({type(e).__name__}: {str(e)[:200]}); falling back to eager", flush=True)
+            model, compiled = eager_model, False
+            optimizer.zero_grad(set_to_none=True)
+            loss_sum = forward_backward(model)
         scaler.unscale_(optimizer)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg["grad_clip"])
         scaler.step(optimizer)  # skipped automatically if grads are inf/nan

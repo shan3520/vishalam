@@ -122,3 +122,24 @@ def test_chunked_loss_matches_full_loss_and_grads(monkeypatch):
     assert torch.allclose(full, chunked, atol=1e-5)
     for a, p in zip(g_full, m.parameters()):
         assert torch.allclose(a, p.grad, atol=1e-5)
+
+
+def test_unwrap_peels_compile_and_ddp_wrappers():
+    from vishalam.train.ckpt import unwrap
+
+    m = Vishalam(TINY)
+
+    class FakeDDP(torch.nn.Module):
+        def __init__(self, module):
+            super().__init__()
+            self.module = module
+
+    class FakeCompiled(torch.nn.Module):
+        def __init__(self, mod):
+            super().__init__()
+            self._orig_mod = mod
+
+    assert unwrap(FakeCompiled(FakeDDP(m))) is m
+    assert unwrap(FakeDDP(FakeCompiled(m))) is m
+    assert unwrap(m) is m
+    assert all(not k.startswith(("module.", "_orig_mod.")) for k in unwrap(FakeCompiled(FakeDDP(m))).state_dict())
