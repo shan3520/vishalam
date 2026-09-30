@@ -25,7 +25,7 @@ def test_forward_shapes_and_loss():
     m = Vishalam(TINY)
     x = torch.randint(0, 300, (2, 16))
     y = torch.randint(0, 300, (2, 16))  # independent targets (tied embeddings favour y == x)
-    logits, loss = m(x, y)
+    logits, loss = m(x, y, return_logits=True)
     assert logits.shape == (2, 16, 300)
     assert abs(loss.item() - torch.log(torch.tensor(300.0)).item()) < 0.5  # ~uniform at init
 
@@ -37,7 +37,7 @@ def test_loss_mask():
     mask = torch.zeros(1, 16)
     mask[0, 8:] = 1
     _, l_masked = m(x, x, loss_mask=mask)
-    logits, _ = m(x, x)
+    logits, _ = m(x, x, return_logits=True)
     ce = torch.nn.functional.cross_entropy(logits[0, 8:], x[0, 8:])
     assert torch.allclose(l_masked, ce, atol=1e-5)
 
@@ -49,8 +49,8 @@ def test_causality():
     y = x.clone()
     y[0, 8:] = (y[0, 8:] + 1) % 300
     with torch.no_grad():
-        a, _ = m(x, x)
-        b, _ = m(y, y)
+        a, _ = m(x, x, return_logits=True)
+        b, _ = m(y, y, return_logits=True)
     assert torch.allclose(a[0, :8], b[0, :8], atol=1e-5)
 
 
@@ -59,7 +59,7 @@ def test_kv_cache_matches_full_forward():
     m = Vishalam(TINY).eval()
     x = torch.randint(0, 300, (1, 20))
     with torch.no_grad():
-        full, _ = m(x, x)
+        full, _ = m(x, x, return_logits=True)
         cache = KVCache(TINY, 1, 64, "cpu", torch.float32)
         m(x[:, :13], cache=cache)  # prefill 13 tokens
         step_logits = []
@@ -101,3 +101,24 @@ def test_grad_checkpointing_same_grads():
     l2.backward()
     for a, p in zip(g1, m.parameters()):
         assert torch.allclose(a, p.grad, atol=1e-6)
+
+
+def test_chunked_loss_matches_full_loss_and_grads(monkeypatch):
+    import vishalam.model.model as mm
+
+    monkeypatch.setattr(mm, "LOSS_CHUNK", 7)  # several uneven chunks
+    torch.manual_seed(0)
+    m = Vishalam(TINY)
+    x = torch.randint(0, 300, (2, 16))
+    y = torch.randint(0, 300, (2, 16))
+    mask = (torch.rand(2, 16) > 0.3).float()
+    _, full = m(x, y, loss_mask=mask, z_loss=1e-3, return_logits=True)
+    full.backward()
+    g_full = [p.grad.clone() for p in m.parameters()]
+    m.zero_grad()
+    logits, chunked = m(x, y, loss_mask=mask, z_loss=1e-3)
+    assert logits is None
+    chunked.backward()
+    assert torch.allclose(full, chunked, atol=1e-5)
+    for a, p in zip(g_full, m.parameters()):
+        assert torch.allclose(a, p.grad, atol=1e-5)

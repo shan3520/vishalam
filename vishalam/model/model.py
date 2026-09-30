@@ -150,11 +150,13 @@ class Vishalam(nn.Module):
         loss_mask: torch.Tensor | None = None,
         cache: KVCache | None = None,
         z_loss: float = 0.0,
+        return_logits: bool = False,
     ):
         """idx: (B, T) token ids. targets: (B, T) next-token ids (or None).
         loss_mask: (B, T) 1 where the target should count toward the loss (e.g. agent tokens only).
-        Returns (logits, loss). During training only the loss matters; logits are returned for
-        inference (with cache, only the last position's logits are computed).
+        Returns (logits, loss). With targets, logits are None unless return_logits=True (training uses a
+        memory-saving chunked loss). Without targets (inference), only the last position's logits are
+        computed.
         """
         B, T = idx.shape
         start = cache.pos if cache is not None else 0
@@ -174,17 +176,48 @@ class Vishalam(nn.Module):
         if targets is None:
             return self.lm_head(x[:, -1:]).float(), None
 
-        logits = self.lm_head(x).float()
-        flat_logits = logits.view(-1, logits.size(-1))
+        flat_x = x.reshape(-1, x.size(-1))
         flat_targets = targets.reshape(-1)
-        ce = F.cross_entropy(flat_logits, flat_targets, reduction="none")
         if loss_mask is None:
-            weights = torch.ones_like(ce)
+            weights = torch.ones(flat_targets.shape, device=x.device, dtype=torch.float32)
         else:
-            weights = loss_mask.reshape(-1).to(ce.dtype)
+            weights = loss_mask.reshape(-1).to(torch.float32)
         denom = weights.sum().clamp(min=1.0)
-        loss = (ce * weights).sum() / denom
+
+        if return_logits:
+            logits = self.lm_head(x).float()
+            ce_sum, z_sum = _loss_terms(logits.view(-1, logits.size(-1)), flat_targets, weights, z_loss)
+        else:
+            # Chunked loss: never materialise (B*T, vocab) fp32 logits at once. Each chunk's logits are
+            # recomputed in backward (checkpoint), so peak memory is one chunk instead of the whole batch.
+            logits = None
+            ce_sum = z_sum = torch.zeros((), device=x.device, dtype=torch.float32)
+            for s in range(0, flat_x.size(0), LOSS_CHUNK):
+                sl = slice(s, s + LOSS_CHUNK)
+                if torch.is_grad_enabled():
+                    c, z = checkpoint(self._chunk_loss, flat_x[sl], flat_targets[sl], weights[sl], z_loss,
+                                      use_reentrant=False)
+                else:
+                    c, z = self._chunk_loss(flat_x[sl], flat_targets[sl], weights[sl], z_loss)
+                ce_sum, z_sum = ce_sum + c, z_sum + z
+        loss = ce_sum / denom
         if z_loss > 0:
-            lse = torch.logsumexp(flat_logits, dim=-1)
-            loss = loss + z_loss * ((lse**2) * weights).sum() / denom
+            loss = loss + z_loss * z_sum / denom
         return logits, loss
+
+    def _chunk_loss(self, h, t, w, z_loss: float):
+        return _loss_terms(self.lm_head(h).float(), t, w, z_loss)
+
+
+LOSS_CHUNK = 4096  # tokens per loss chunk (~0.8 GB of fp32 logits for a 50k vocab)
+
+
+def _loss_terms(flat_logits, targets, weights, z_loss: float):
+    ce = F.cross_entropy(flat_logits, targets, reduction="none")
+    ce_sum = (ce * weights).sum()
+    if z_loss > 0:
+        lse = torch.logsumexp(flat_logits, dim=-1)
+        z_sum = ((lse**2) * weights).sum()
+    else:
+        z_sum = torch.zeros((), device=flat_logits.device, dtype=torch.float32)
+    return ce_sum, z_sum
