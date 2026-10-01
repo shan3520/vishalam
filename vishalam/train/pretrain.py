@@ -25,6 +25,7 @@ from pathlib import Path
 
 import torch
 import torch.distributed as dist
+import yaml
 
 from vishalam.model.config import ModelConfig, load_yaml
 from vishalam.model.model import Vishalam
@@ -102,6 +103,8 @@ def main() -> None:
     ap.add_argument("--stop-at-step", type=int, default=None, help="pause (save) at this step (tests)")
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--force", action="store_true", help="ignore a recent heartbeat from another session")
+    ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
+                    help="override a train: config value, e.g. --set micro_batch=1 (benchmarks)")
     args = ap.parse_args()
 
     # ---- distributed setup ----
@@ -121,6 +124,9 @@ def main() -> None:
 
     raw = load_yaml(args.config)
     name, tcfg = raw["name"], raw["train"]
+    for kv in args.set:
+        key, _, value = kv.partition("=")
+        tcfg[key] = yaml.safe_load(value)
     mcfg = ModelConfig(**raw["model"])
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)

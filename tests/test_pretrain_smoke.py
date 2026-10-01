@@ -125,3 +125,13 @@ def test_muon_training_and_exact_resume(setup):
     resumed = losses(tmp / "m_resumed")
     for s in (30, 40):
         assert abs(resumed[s] - straight[s]) < 1e-3, (s, resumed[s], straight[s])
+
+
+def test_set_overrides_train_config(setup):
+    tmp, shards, cfg = setup
+    run(cfg, shards, tmp / "override", "--set", "global_batch_seqs=16", "--set", "micro_batch=2",
+        "--stop-at-step", "3")
+    with open(tmp / "override" / "log.csv") as f:
+        rows = list(csv.DictReader(f))
+    last = rows[-1]
+    assert int(float(last["tokens"])) == int(last["step"]) * 16 * 128  # 16 sequences of 128 tokens per step

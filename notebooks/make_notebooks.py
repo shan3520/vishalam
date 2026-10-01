@@ -147,6 +147,34 @@ df.tail()
     ]
 
 
+BENCH_350M_CELLS = [
+    SETUP, GPU_GUARD, DATA_INPUTS,
+    '''\
+# --- 350M speed test on 2xT4: real data + real training code, a few settings, ~20 steps each ---
+import re, subprocess
+SETTINGS = [  # micro batch per GPU, activation checkpointing
+    (1, False), (2, True), (2, False), (4, True),
+]
+summary = []
+for micro, ckpt in SETTINGS:
+    tag = f"micro={micro} ckpt={ckpt}"
+    cmd = (f"torchrun --standalone --nproc_per_node={torch.cuda.device_count()} -m vishalam.train.pretrain "
+           f"--config configs/vishalam-350m.yaml --data-dirs {','.join(DATA_DIRS)} --tokenizer {TOKENIZER} "
+           f"--out /tmp/bench_{micro}_{int(ckpt)} --stop-at-step 20 --set global_batch_seqs=32 "
+           f"--set micro_batch={micro} --set grad_checkpointing={str(ckpt).lower()} --set eval_every=100000")
+    try:
+        r = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=1800)
+        out = r.stdout + r.stderr
+    except subprocess.TimeoutExpired:
+        out = "TIMEOUT"
+    steps = [l for l in out.splitlines() if l.startswith("step ")]
+    print(f"==== {tag}\\n" + ("\\n".join(steps) or out[-1500:]), flush=True)
+    m = re.search(r"([\\d,]+) tok/s mem ([\\d.]+)GB", steps[-1]) if steps else None
+    summary.append(f"{tag}: {m.group(1)} tok/s, {m.group(2)} GB" if m else f"{tag}: FAILED (out of memory?)")
+print("\\n==== SUMMARY (350M, 2xT4, Muon) ====\\n" + "\\n".join(summary))
+''',
+]
+
 AGENTDATA_CELLS = [
     SETUP,
     '''\
@@ -260,6 +288,7 @@ def main() -> None:
                           pretrain_cells(size), gpu=True)
     # A/B pilot: same data/tokens/schedule as vishalam-pretrain-30m-a, but Muon for hidden matrices
     kaggle_kernel("vishalam_pretrain_30m_muon", "vishalam pretrain 30m muon", pretrain_cells("30m-muon"), gpu=True)
+    kaggle_kernel("vishalam_bench_350m", "vishalam bench 350m", BENCH_350M_CELLS, gpu=True)
     kaggle_kernel("vishalam_agent_data", "vishalam agent data", AGENTDATA_CELLS, gpu=False)
     kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
     for size in ["125m", "350m"]:
