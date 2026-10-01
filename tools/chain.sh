@@ -10,7 +10,8 @@ status() { $D status "vishalam-pretrain-$SIZE-$1" 2>&1 | tail -1; }
 for n in $(seq 1 "$MAX"); do
   while :; do
     s=$(status "$CUR"); echo "$(date '+%m-%d %H:%M') $SIZE-$CUR $s"
-    case "$s" in RUNNING|QUEUED|NEW|*rror*|*imeout*|*onnection*|*Exception*) sleep 600;; *) break;; esac
+    # a real Kaggle status is one upper-case word; anything else (DNS/HTTP error text) is transient
+    case "$s" in RUNNING|QUEUED|NEW|""|*[!A-Z_]*) sleep 600;; *) break;; esac
   done
   if [ "$s" != "COMPLETE" ]; then echo "session $SIZE-$CUR ended with $s - chain stopped"; $D logs "vishalam-pretrain-$SIZE-$CUR" | tail -20; exit 1; fi
   last=$($D logs "vishalam-pretrain-$SIZE-$CUR" | tail -25); echo "$last" | grep -E "step|finished|paused|resumed" | tail -4

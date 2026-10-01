@@ -6,6 +6,13 @@ The notebook embeds Vishalam's model/config/Muon source (no GitHub/HF tokens, no
 and trains on random tokens: speed does not depend on token content. It measures tokens/s for
   * 125M + AdamW  (compare: Kaggle 2xT4 measured 13,700 tok/s)
   * 350M + Muon   (the real target; Kaggle 2xT4 projected ~5,000 tok/s)
+
+Measured 2026-10-01 on the free v5e-1 (torch_xla 2.9):
+  * 125M without activation checkpointing does not fit 16 GB HBM even at micro=2 (plain SDPA on XLA
+    materialises the 4096x4096 attention scores).
+  * 350M + Muon, micro=4, checkpointing: 5,489 tok/s (~same as one Kaggle 2xT4 session).
+  * After that single ~1 h benchmark Colab refused to reconnect ("usage limits"), so the free TPU
+    is not a dependable extra source of training hours.
 """
 from __future__ import annotations
 

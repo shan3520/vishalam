@@ -12,7 +12,11 @@ train:
   micro_batch: 2
   global_batch_seqs: 128  # 524k tokens per step -> ~19k steps
   total_tokens: 10_000_000_000
-  lr: 3.0e-4
+  lr: 3.0e-4               # AdamW LR for embedding/tied head + norms
+  optimizer: muon          # Muon for hidden matrices: 30M A/B reached AdamW's final val loss in ~42% of the tokens
+  muon_lr: 0.02
+  muon_momentum: 0.95
+  muon_weight_decay: 0.0
   min_lr_ratio: 0.1
   warmup_steps: 1000
   weight_decay: 0.1
