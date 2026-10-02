@@ -33,6 +33,9 @@ print(subprocess.run([sys.executable, "-c", "import torch, torch_xla; print('tor
 
 BENCH_PY = r'''
 import os, statistics, sys, time
+# Kaggle's TPU VM sets this for a multi-host slice; torch_xla then expects 8 hosts ("Expected 8 worker
+# addresses, got 1") instead of 8 chips on one host.
+os.environ.pop("TPU_PROCESS_ADDRESSES", None)
 sys.path.insert(0, "/kaggle/working/vishalam_src")
 import torch
 import torch_xla
