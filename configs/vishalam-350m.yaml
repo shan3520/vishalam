@@ -9,7 +9,7 @@ model:
   max_seq_len: 4096
 train:
   seq_len: 4096
-  micro_batch: 2
+  micro_batch: 1            # 2xT4 measured: micro 1 without recompute 7,158 tok/s (11.1 GB) > micro 2 with 6,279
   global_batch_seqs: 128  # 524k tokens per step -> ~19k steps
   total_tokens: 10_000_000_000
   lr: 3.0e-4               # AdamW LR for embedding/tied head + norms
@@ -22,7 +22,7 @@ train:
   weight_decay: 0.1
   grad_clip: 1.0
   z_loss: 1.0e-4
-  grad_checkpointing: true
+  grad_checkpointing: false # (the TPU sessions turn it on, with micro 4 per chip: 16 GB HBM)
   compile: true            # torch.compile on CUDA; falls back to eager automatically
   eval_every: 500
   eval_batches: 20

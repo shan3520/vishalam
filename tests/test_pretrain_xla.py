@@ -1,7 +1,9 @@
 """The PyTorch/XLA (TPU) path of the pretraining loop, run on XLA's CPU backend.
 
 Skipped unless torch_xla is installed (Linux only). On Kaggle CPU:
-    PJRT_DEVICE=CPU CPU_NUM_DEVICES=2 python -m pytest tests/test_pretrain_xla.py
+    PJRT_DEVICE=CPU CPU_NUM_DEVICES=1 python -m pytest tests/test_pretrain_xla.py
+One simulated chip: XLA's CPU backend cannot run multi-process collectives (they hang); the
+8-chip collectives are exercised on the real TPU (notebooks/make_kaggle_tpu_bench.py).
 """
 import os
 import subprocess
@@ -18,7 +20,7 @@ def run_xla(cfg, shards, out, *extra, xla=True):
     cmd = [sys.executable, "-m", "vishalam.train.pretrain", "--config", str(cfg), "--data-dir", str(shards),
            "--out", str(out), "--max-steps", "40", *(["--xla"] if xla else []), *extra]
     env = {**os.environ, "CUDA_VISIBLE_DEVICES": "-1", "PJRT_DEVICE": "CPU"}
-    env.setdefault("CPU_NUM_DEVICES", "2")
+    env.setdefault("CPU_NUM_DEVICES", "1")
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env, timeout=1800)
     if r.returncode != 0:  # full output on disk: pytest shortens long assertion messages
         (out.parent / "last_failure.txt").write_text(r.stdout + "\n---- stderr ----\n" + r.stderr)

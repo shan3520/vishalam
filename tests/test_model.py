@@ -143,3 +143,11 @@ def test_unwrap_peels_compile_and_ddp_wrappers():
     assert unwrap(FakeDDP(FakeCompiled(m))) is m
     assert unwrap(m) is m
     assert all(not k.startswith(("module.", "_orig_mod.")) for k in unwrap(FakeCompiled(FakeDDP(m))).state_dict())
+
+
+def test_embedding_stays_tied_after_device_and_dtype_moves():
+    m = Vishalam(ModelConfig(vocab_size=300, d_model=32, n_layers=1, n_heads=4, ffn_dim=64, max_seq_len=16))
+    for move in (lambda x: x.to("cpu"), lambda x: x.half(), lambda x: x.float()):
+        m = move(m)
+        assert m.lm_head.weight is m.embed.weight
+    assert len(list(m.parameters())) == len({id(p) for p in m.parameters()})

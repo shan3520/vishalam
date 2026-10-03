@@ -140,6 +140,14 @@ class Vishalam(nn.Module):
         if isinstance(m, (nn.Linear, nn.Embedding)):
             nn.init.normal_(m.weight, mean=0.0, std=0.02)
 
+    def _apply(self, fn, *args, **kwargs):
+        super()._apply(fn, *args, **kwargs)
+        # PyTorch/XLA rebuilds every parameter on .to(device), which would untie the output head from
+        # the embedding (a different model, and checkpoints that no longer load across GPU/TPU)
+        if self.cfg.tie_embeddings:
+            self.lm_head.weight = self.embed.weight
+        return self
+
     def num_params(self) -> int:
         return sum(p.numel() for p in self.parameters())
 
