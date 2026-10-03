@@ -147,6 +147,36 @@ df.tail()
     ]
 
 
+TPU_GUARD = '''\
+# --- TPU guard: CLI pushes get a plain CPU machine; the real run is started from the editor with
+#     Accelerator = TPU v5e-8. Stop at once if there is no TPU (checked in a subprocess so this
+#     notebook never holds the chips that the training processes need).
+os.environ.pop("TPU_PROCESS_ADDRESSES", None)
+probe = subprocess.run([sys.executable, "-c", "import torch_xla, torch_xla.core.xla_model as xm; "
+                        "print(xm.xla_device_hw(torch_xla.device()))"], capture_output=True, text=True)
+print("accelerator:", probe.stdout.strip() or probe.stderr.strip()[-300:])
+if "TPU" not in probe.stdout:
+    raise SystemExit("No TPU. Open this notebook in the Kaggle editor, Accelerator -> TPU v5e-8, "
+                     "then Save Version -> Save & Run All.")
+'''
+
+
+def pretrain_tpu_cells(size: str) -> list[str]:
+    return [
+        SETUP, TPU_GUARD, DATA_INPUTS,
+        f'''\
+# --- Pretraining session on TPU v5e-8 (8 chips, bf16): resume from the latest {size} session
+#     (GPU or TPU, checkpoints are interchangeable), stop cleanly before Kaggle's 9 h TPU limit ---
+prev = inputs_with("run/ckpt.pt", "vishalam-pretrain-{size}-")
+resume = f"--resume-from {{prev[0]}}/run" if prev else ""
+print("resuming from:", prev or "scratch")
+get_ipython().system(f"python -m vishalam.train.pretrain --xla --config configs/vishalam-{size}.yaml "
+                     f"--data-dirs {{','.join(DATA_DIRS)}} --tokenizer {{TOKENIZER}} {{resume}} "
+                     f"--out {{WORK}}/run --max-hours {{hours_left(8.3):.2f}} --set micro_batch=4")
+''',
+    ]
+
+
 BENCH_350M_CELLS = [
     SETUP, GPU_GUARD, DATA_INPUTS,
     '''\
@@ -182,11 +212,20 @@ XLA_CPUTEST_CELLS = [
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch==2.8.0", "--index-url",
                 "https://download.pytorch.org/whl/cpu"], check=True)
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch_xla==2.8.0"], check=True)
-env = {**os.environ, "PJRT_DEVICE": "CPU", "CPU_NUM_DEVICES": "2"}
-r = subprocess.run([sys.executable, "-m", "pytest", "-x", "-v", "tests/test_pretrain_xla.py"],
-                   capture_output=True, text=True, env=env)
-print(r.stdout[-8000:], r.stderr[-4000:])
-print("XLA TESTS PASSED" if r.returncode == 0 else "XLA TESTS FAILED")
+for n in ("1", "2"):  # one simulated chip first, then two (collectives)
+    env = {**os.environ, "PJRT_DEVICE": "CPU", "CPU_NUM_DEVICES": n}
+    r = subprocess.run([sys.executable, "-m", "pytest", "-x", "-v", "-p", "no:cacheprovider",
+                        "--basetemp", f"/tmp/xla{n}", "tests/test_pretrain_xla.py"],
+                       capture_output=True, text=True, env=env)
+    print(f"==== CPU_NUM_DEVICES={n}
+", r.stdout[-4000:])
+    for f in glob.glob(f"/tmp/xla{n}/**/last_failure.txt", recursive=True):
+        text = open(f).read()
+        print(f"---- {f}
+{text[:3000]}
+[...]
+{text[-6000:]}")
+    print(f"XLA TESTS ({n} device) " + ("PASSED" if r.returncode == 0 else "FAILED"))
 ''',
 ]
 
@@ -263,7 +302,7 @@ def notebook(cells: list[str]) -> dict:
     }
 
 
-def kaggle_kernel(folder: str, title: str, cells: list[str], gpu: bool) -> None:
+def kaggle_kernel(folder: str, title: str, cells: list[str], gpu: bool, tpu: bool = False) -> None:
     d = HERE / folder
     d.mkdir(exist_ok=True)
     (d / "notebook.ipynb").write_text(json.dumps(notebook(cells), indent=1), encoding="utf-8")
@@ -275,7 +314,7 @@ def kaggle_kernel(folder: str, title: str, cells: list[str], gpu: bool) -> None:
         "kernel_type": "notebook",
         "is_private": True,
         "enable_gpu": gpu,
-        "enable_tpu": False,
+        "enable_tpu": tpu,
         "enable_internet": True,
         "dataset_sources": [CODE_DATASET],
         "competition_sources": [],
@@ -301,6 +340,9 @@ def main() -> None:
         for side in "ab":
             kaggle_kernel(f"vishalam_pretrain_{size}_{side}", f"vishalam pretrain {size} {side}",
                           pretrain_cells(size), gpu=True)
+    for side in "ab":  # 350M on Kaggle's TPU v5e-8 (started from the editor; see TPU_GUARD)
+        kaggle_kernel(f"vishalam_pretrain_350m_tpu_{side}", f"vishalam pretrain 350m tpu {side}",
+                      pretrain_tpu_cells("350m"), gpu=False, tpu=True)
     # A/B pilot: same data/tokens/schedule as vishalam-pretrain-30m-a, but Muon for hidden matrices
     kaggle_kernel("vishalam_pretrain_30m_muon", "vishalam pretrain 30m muon", pretrain_cells("30m-muon"), gpu=True)
     kaggle_kernel("vishalam_bench_350m", "vishalam bench 350m", BENCH_350M_CELLS, gpu=True)
