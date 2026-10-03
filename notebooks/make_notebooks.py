@@ -161,9 +161,48 @@ if "TPU" not in probe.stdout:
 '''
 
 
+TPU_RUNNER = r'''# --- Run a command with a watchdog and host-memory reports (a crash on the TPU VM otherwise
+#     leaves no trace: a process killed for memory prints nothing) ---
+import threading
+def sh(c):
+    return subprocess.run(c, shell=True, capture_output=True, text=True).stdout.strip()
+def host_mem():
+    avail = sh("awk '/MemAvailable/ {printf \"%.0f\", $2/1048576}' /proc/meminfo")
+    rss = sh("ps -eo rss,comm | awk '/python/ {s+=$1} END {printf \"%.1f\", s/1048576}'")
+    peak = sh("cat /sys/fs/cgroup/memory.peak 2>/dev/null | awk '{printf \"%.0f\", $1/1073741824}'")
+    return f"[mem] free {avail} GB, python procs {rss} GB, cgroup peak {peak or '?'} GB"
+def run_watched(cmd, silent_min=40):
+    """Stream the command's output; kill it after `silent_min` minutes without output (e.g. a stuck
+    collective would otherwise burn the whole 9 h session); report memory every minute early on."""
+    print("host:", sh("nproc"), "cpus,", sh("free -g | awk '/Mem/ {print $2}'"), "GB RAM, cgroup limit",
+          sh("cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes"))
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    last, t_run = [time.time()], time.time()
+    def watch():
+        while proc.poll() is None:
+            if time.time() - last[0] > silent_min * 60:
+                print(f"WATCHDOG: no output for {silent_min} min - stopping the run", flush=True)
+                proc.kill()
+            print(host_mem(), flush=True)
+            time.sleep(60 if time.time() - t_run < 2400 else 600)
+    threading.Thread(target=watch, daemon=True).start()
+    for line in proc.stdout:
+        last[0] = time.time()
+        if not any(k in line for k in ("Warning", "warnings.warn", "symbolize")):
+            print(line, end="", flush=True)
+    code = proc.wait()
+    print("exit code", code, "|", host_mem())
+    if code != 0:  # was it the out-of-memory killer?
+        print(sh("cat /sys/fs/cgroup/memory.events 2>/dev/null"))
+        print(sh("dmesg -T 2>/dev/null | grep -i -E 'killed process|out of memory|oom' | tail -10")
+              or "(dmesg not readable)")
+    return code
+'''
+
+
 def pretrain_tpu_cells(size: str) -> list[str]:
     return [
-        SETUP, TPU_GUARD, DATA_INPUTS,
+        SETUP, TPU_GUARD, DATA_INPUTS, TPU_RUNNER,
         f'''\
 # --- Pretraining session on TPU v5e-8 (8 chips, bf16): resume from the latest {size} session
 #     (GPU or TPU, checkpoints are interchangeable), stop cleanly before Kaggle's 9 h TPU limit ---
@@ -173,23 +212,7 @@ print("resuming from:", prev or "scratch")
 cmd = (f"python -m vishalam.train.pretrain --xla --config configs/vishalam-{size}.yaml "
        f"--data-dirs {{','.join(DATA_DIRS)}} --tokenizer {{TOKENIZER}} {{resume}} --out {{WORK}}/run "
        f"--max-hours {{hours_left(8.3):.2f}} --set micro_batch=4 --set grad_checkpointing=true")
-# watchdog: a stuck run (e.g. a collective that never completes) would otherwise burn the whole
-# 9 h session; no output for 40 min (first-step compile is ~1 min) -> stop it
-import threading
-proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-last = [time.time()]
-def watch():
-    while proc.poll() is None:
-        if time.time() - last[0] > 2400:
-            print("WATCHDOG: no output for 40 min - stopping the run", flush=True)
-            proc.kill()
-        time.sleep(30)
-threading.Thread(target=watch, daemon=True).start()
-for line in proc.stdout:
-    last[0] = time.time()
-    if "Warning" not in line:
-        print(line, end="", flush=True)
-print("exit code", proc.wait())
+run_watched(cmd)
 ''',
     ]
 
