@@ -66,3 +66,17 @@ def test_xla_muon(setup):
     assert "Muon(" in out
     ls = losses(tmp / "x_muon")
     assert ls[40] < ls[1] - 1.0, ls
+
+
+@pytest.mark.parametrize("optimizer", ["adamw", "muon"])
+def test_xla_does_not_recompile_every_step(setup, optimizer):
+    """The LR changes every step (warmup + cosine). If XLA baked it into the graph, every step would
+    compile again: hours of compile time and growing host memory on the TPU."""
+    import re
+
+    tmp, shards, cfg = setup
+    out = run_xla(cfg, shards, tmp / f"x_compiles_{optimizer}", "--max-steps", "30", "--set", f"optimizer={optimizer}",
+                  "--set", "muon_lr=0.02")
+    counts = {int(m.group(1)): int(m.group(2)) for m in re.finditer(r"step (\d+)/\d+ .*compiles (\d+)", out)}
+    assert counts, out
+    assert counts[30] == counts[10], counts  # nothing new to compile after the first steps

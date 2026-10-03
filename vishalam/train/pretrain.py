@@ -162,6 +162,18 @@ def main() -> None:
         train(0, args)
 
 
+def xla_health() -> str:
+    """Compile count (must stop growing after the first steps, or every step recompiles) and host RAM."""
+    import resource
+
+    import torch_xla.debug.metrics as met
+
+    compiles = (met.metric_data("CompileTime") or [0])[0]
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 2**20  # KiB -> GiB
+    avail = next((int(l.split()[1]) / 2**20 for l in open("/proc/meminfo") if l.startswith("MemAvailable")), -1)
+    return f"compiles {compiles} host-rss {rss:.1f}GB host-free {avail:.0f}GB"
+
+
 def train(index: int, args: argparse.Namespace) -> None:
     # ---- distributed setup ----
     ddp = "RANK" in os.environ and not args.xla
@@ -405,12 +417,14 @@ def train(index: int, args: argparse.Namespace) -> None:
             t_eval = time.time()
             val = f"{evaluate():.4f}"
             window_t += time.time() - t_eval  # evaluation time is not training throughput
-        if master and (step % 10 == 0 or step == 1 or val):
+        if master and (step % 10 == 0 or step == 1 or val or (device_type == "xla" and step <= 10)):
             # XLA runs asynchronously: .item() below waits for the device, so throughput is measured
             # over the steps since the last log line rather than from one step's host time
             loss_v, gnorm_v = loss_sum.item(), grad_norm.item()
             tok_s = (step - window_step) * global_batch * seq_len / (time.time() - window_t)
             mem = f" mem {torch.cuda.max_memory_allocated() / 2**30:.1f}GB" if device_type == "cuda" else ""
+            if device_type == "xla":
+                mem = f" {xla_health()}"
             print(f"step {step}/{total_steps} loss {loss_v:.4f} {('val ' + val) if val else ''} "
                   f"lr {lr:.2e} gnorm {gnorm_v:.2f} {tok_s:,.0f} tok/s{mem}", flush=True)
             log([step, step * global_batch * seq_len, f"{loss_v:.4f}", val, f"{lr:.3e}",
