@@ -175,6 +175,21 @@ print("\\n==== SUMMARY (350M, 2xT4, Muon) ====\\n" + "\\n".join(summary))
 ''',
 ]
 
+XLA_CPUTEST_CELLS = [
+    SETUP,
+    '''\
+# --- Test the TPU (PyTorch/XLA) training path on XLA's CPU backend: no TPU queue, no quota ---
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch==2.8.0", "--index-url",
+                "https://download.pytorch.org/whl/cpu"], check=True)
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "torch_xla==2.8.0"], check=True)
+env = {**os.environ, "PJRT_DEVICE": "CPU", "CPU_NUM_DEVICES": "2"}
+r = subprocess.run([sys.executable, "-m", "pytest", "-x", "-v", "tests/test_pretrain_xla.py"],
+                   capture_output=True, text=True, env=env)
+print(r.stdout[-8000:], r.stderr[-4000:])
+print("XLA TESTS PASSED" if r.returncode == 0 else "XLA TESTS FAILED")
+''',
+]
+
 AGENTDATA_CELLS = [
     SETUP,
     '''\
@@ -289,6 +304,7 @@ def main() -> None:
     # A/B pilot: same data/tokens/schedule as vishalam-pretrain-30m-a, but Muon for hidden matrices
     kaggle_kernel("vishalam_pretrain_30m_muon", "vishalam pretrain 30m muon", pretrain_cells("30m-muon"), gpu=True)
     kaggle_kernel("vishalam_bench_350m", "vishalam bench 350m", BENCH_350M_CELLS, gpu=True)
+    kaggle_kernel("vishalam_xla_cputest", "vishalam xla cputest", XLA_CPUTEST_CELLS, gpu=False)
     kaggle_kernel("vishalam_agent_data", "vishalam agent data", AGENTDATA_CELLS, gpu=False)
     kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
     for size in ["125m", "350m"]:

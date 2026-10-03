@@ -21,7 +21,7 @@ def setup(tmp_path_factory):
     tmp = tmp_path_factory.mktemp("pre")
     import glob, os
 
-    lib = os.path.join(sys.base_prefix, "Lib")
+    lib = os.path.dirname(os.path.dirname(json.__file__))  # the stdlib dir (Windows: Lib, Linux: lib/python3.x)
     texts = []
     for f in sorted(glob.glob(lib + "/json/*.py") + glob.glob(lib + "/email/*.py"))[:30]:
         texts.append(Path(f).read_text(encoding="utf-8", errors="replace"))

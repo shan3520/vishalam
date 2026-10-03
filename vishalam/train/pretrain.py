@@ -50,8 +50,53 @@ def build_optimizer(model: torch.nn.Module, lr: float, weight_decay: float, devi
         {"params": decay, "weight_decay": weight_decay},
         {"params": no_decay, "weight_decay": 0.0},
     ]
-    kwargs = {"fused": True} if device_type == "cuda" else {}
-    return torch.optim.AdamW(groups, lr=lr, betas=(0.9, 0.95), eps=1e-8, **kwargs)
+    return torch.optim.AdamW(groups, lr=lr, betas=(0.9, 0.95), eps=1e-8, **_adamw_kwargs(device_type))
+
+
+def _adamw_kwargs(device_type: str) -> dict:
+    return {"fused": True} if device_type == "cuda" else {"foreach": True} if device_type == "xla" else {}
+
+
+class Comm:
+    """The collectives this loop needs, for its three ways of running: one process, torchrun DDP
+    (CUDA/CPU) and PyTorch/XLA (TPU, one process per chip). XLA ops are lazy: they only run at
+    the next mark_step / .item()."""
+
+    def __init__(self, kind: str, world: int):
+        self.kind, self.world = kind, world
+        if kind == "xla":
+            import torch_xla.core.xla_model as xm
+            self.xm = xm
+
+    def avg(self, t: torch.Tensor) -> torch.Tensor:
+        if self.kind == "ddp":
+            dist.all_reduce(t, op=dist.ReduceOp.AVG)
+        elif self.kind == "xla" and self.world > 1:
+            t = self.xm.all_reduce(self.xm.REDUCE_SUM, t, scale=1.0 / self.world)
+        return t
+
+    def max(self, t: torch.Tensor) -> torch.Tensor:
+        if self.kind == "ddp":
+            dist.all_reduce(t, op=dist.ReduceOp.MAX)
+        elif self.kind == "xla" and self.world > 1:
+            t = self.xm.all_reduce(self.xm.REDUCE_MAX, t)
+        return t
+
+    def sync_grads(self, model: torch.nn.Module) -> None:
+        """DDP averages gradients itself; on XLA it is one all_reduce over all of them."""
+        if self.kind == "xla" and self.world > 1:
+            grads = [p.grad for p in model.parameters() if p.grad is not None]
+            self.xm.all_reduce(self.xm.REDUCE_SUM, grads, scale=1.0 / self.world)
+
+    def barrier(self, tag: str) -> None:
+        if self.kind == "ddp":
+            dist.barrier()
+        elif self.kind == "xla" and self.world > 1:
+            self.xm.rendezvous(tag)
+
+    def mark_step(self) -> None:
+        if self.kind == "xla":
+            self.xm.mark_step()
 
 
 def build_optimizers(model: torch.nn.Module, tcfg: dict, device_type: str) -> list[torch.optim.Optimizer]:
@@ -75,10 +120,9 @@ def build_optimizers(model: torch.nn.Module, tcfg: dict, device_type: str) -> li
                 adam_no_decay.append(p)    # RMSNorm weights
         muon = Muon([{"params": hidden}, {"params": qkv, "split": 3}], lr=tcfg["muon_lr"],
                     momentum=tcfg.get("muon_momentum", 0.95), weight_decay=tcfg.get("muon_weight_decay", 0.0))
-        kwargs = {"fused": True} if device_type == "cuda" else {}
         adam = torch.optim.AdamW([{"params": adam_decay, "weight_decay": tcfg["weight_decay"]},
                                   {"params": adam_no_decay, "weight_decay": 0.0}],
-                                 lr=tcfg["lr"], betas=(0.9, 0.95), eps=1e-8, **kwargs)
+                                 lr=tcfg["lr"], betas=(0.9, 0.95), eps=1e-8, **_adamw_kwargs(device_type))
         opts = [muon, adam]
     for opt in opts:
         for g in opt.param_groups:
@@ -105,20 +149,46 @@ def main() -> None:
     ap.add_argument("--force", action="store_true", help="ignore a recent heartbeat from another session")
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="override a train: config value, e.g. --set micro_batch=1 (benchmarks)")
+    ap.add_argument("--xla", action="store_true",
+                    help="PyTorch/XLA (Kaggle TPU v5e-8): one process per chip, bf16")
     args = ap.parse_args()
+    if args.xla:
+        # Kaggle's TPU VM describes a multi-host slice here; torch_xla would then wait for 8 hosts
+        os.environ.pop("TPU_PROCESS_ADDRESSES", None)
+        import torch_xla
 
+        torch_xla.launch(train, args=(args,))
+    else:
+        train(0, args)
+
+
+def train(index: int, args: argparse.Namespace) -> None:
     # ---- distributed setup ----
-    ddp = "RANK" in os.environ
-    if ddp:
+    ddp = "RANK" in os.environ and not args.xla
+    if args.xla:
+        import torch_xla
+        import torch_xla.runtime as xr
+        import torch_xla.utils.checkpoint as xla_ckpt
+
+        import vishalam.model.model as vm
+
+        # the XLA compiler can optimise plain torch checkpointing away; this version survives it
+        vm.checkpoint = lambda fn, *a, use_reentrant=False: xla_ckpt.checkpoint(fn, *a)
+        rank, world = xr.global_ordinal(), xr.world_size()
+        device = torch_xla.device()
+        device_type = "xla"
+    elif ddp:
         dist.init_process_group("nccl")
         rank, world = dist.get_rank(), dist.get_world_size()
         local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(local_rank)
         device = f"cuda:{local_rank}"
+        device_type = "cuda"
     else:
         rank, world = 0, 1
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    device_type = "cuda" if device.startswith("cuda") else "cpu"
+        device_type = "cuda" if device == "cuda" else "cpu"
+    comm = Comm("xla" if args.xla else "ddp" if ddp else "single", world)
     master = rank == 0
     torch.manual_seed(args.seed + rank)
 
@@ -134,11 +204,13 @@ def main() -> None:
     # ---- precision: bf16 where supported (A100/L4...), fp16 + loss scaling on T4 ----
     if device_type == "cuda":
         amp_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported(including_emulation=False) else torch.float16
+    elif device_type == "xla":
+        amp_dtype = torch.bfloat16  # TPUs compute in bf16 natively; no loss scaling needed
     else:
         amp_dtype = None
     scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
     autocast = (
-        (lambda: torch.autocast("cuda", dtype=amp_dtype)) if amp_dtype else contextlib.nullcontext
+        (lambda: torch.autocast(device_type, dtype=amp_dtype)) if amp_dtype else contextlib.nullcontext
     )
 
     # ---- model / optimizer ----
@@ -196,8 +268,7 @@ def main() -> None:
             prev_log = hub.pull(f"{name}/latest/log.csv", out / "_hub")
             if prev_log is not None:
                 shutil.copy(prev_log, out / "log.csv")  # keep one continuous loss curve
-        if ddp:
-            dist.barrier()
+        comm.barrier("hub_pull")
         pulled = out / "_hub" / name / "latest" / "ckpt.pt"
         if pulled.exists():
             ckpt_path = pulled
@@ -209,13 +280,14 @@ def main() -> None:
                 shutil.copy(prev / "log.csv", out / "log.csv")  # one continuous loss curve
     step = 0
     if ckpt_path.exists():
-        state = load_checkpoint(ckpt_path, model, optimizers, scaler, map_location=device)
+        # XLA: load on the host; load_state_dict then copies into the on-chip tensors
+        state = load_checkpoint(ckpt_path, model, optimizers, scaler,
+                                map_location="cpu" if device_type == "xla" else device)
         step = state["step"]
         del state
         if master:
             print(f"resumed from {ckpt_path} at step {step}", flush=True)
-    if ddp:
-        dist.barrier()  # every rank has loaded before the downloaded copy is removed
+    comm.barrier("resumed")  # every rank has loaded before the downloaded copy is removed
     if master:
         shutil.rmtree(out / "_hub", ignore_errors=True)  # keep /kaggle/working small
     if ddp:
@@ -273,16 +345,14 @@ def main() -> None:
             losses.append(loss.float())
         eager_model.train()
         v = torch.stack(losses).mean() if losses else torch.tensor(float("nan"), device=device)
-        if ddp:
-            dist.all_reduce(v, op=dist.ReduceOp.AVG)
-        return v.item()
+        return comm.avg(v).item()
 
     # ---- train ----
     t_start = time.time()
     last_save = time.time()
+    window_step, window_t = step, time.time()
     model.train()
     while step < total_steps:
-        t0 = time.time()
         factor = lr_at(step, total_steps, 1.0, tcfg["warmup_steps"], tcfg["min_lr_ratio"])
         lr = factor * tcfg["lr"]  # logged value: the AdamW LR (Muon groups scale their own base_lr)
         for opt in optimizers:
@@ -300,6 +370,7 @@ def main() -> None:
                     loss = loss / len(batches)
                     scaler.scale(loss).backward()
                 total += loss.detach()
+                comm.mark_step()  # XLA: one compiled graph per micro-batch instead of one huge one
             return total
 
         try:
@@ -314,6 +385,7 @@ def main() -> None:
             for opt in optimizers:
                 opt.zero_grad(set_to_none=True)
             loss_sum = forward_backward(model)
+        comm.sync_grads(eager_model)
         for opt in optimizers:
             scaler.unscale_(opt)
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), tcfg["grad_clip"])
@@ -322,35 +394,42 @@ def main() -> None:
         scaler.update()
         for opt in optimizers:
             opt.zero_grad(set_to_none=True)
+        # averaged before mark_step so that, on XLA, every chip runs this collective in the step's
+        # graph (a collective first triggered by rank 0's .item() alone would hang)
+        loss_sum = comm.avg(loss_sum)
+        comm.mark_step()
         step += 1
 
-        if ddp:
-            dist.all_reduce(loss_sum, op=dist.ReduceOp.AVG)
-        dt = time.time() - t0
-        tok_s = global_batch * seq_len / dt
         val = ""
         if vbatches and (step % tcfg["eval_every"] == 0 or step == total_steps):
+            t_eval = time.time()
             val = f"{evaluate():.4f}"
+            window_t += time.time() - t_eval  # evaluation time is not training throughput
         if master and (step % 10 == 0 or step == 1 or val):
+            # XLA runs asynchronously: .item() below waits for the device, so throughput is measured
+            # over the steps since the last log line rather than from one step's host time
+            loss_v, gnorm_v = loss_sum.item(), grad_norm.item()
+            tok_s = (step - window_step) * global_batch * seq_len / (time.time() - window_t)
             mem = f" mem {torch.cuda.max_memory_allocated() / 2**30:.1f}GB" if device_type == "cuda" else ""
-            print(f"step {step}/{total_steps} loss {loss_sum.item():.4f} {('val ' + val) if val else ''} "
-                  f"lr {lr:.2e} gnorm {grad_norm.item():.2f} {tok_s:,.0f} tok/s{mem}", flush=True)
-            log([step, step * global_batch * seq_len, f"{loss_sum.item():.4f}", val, f"{lr:.3e}",
-                 f"{grad_norm.item():.3f}", f"{tok_s:.0f}", scaler.get_scale() if scaler.is_enabled() else 1])
+            print(f"step {step}/{total_steps} loss {loss_v:.4f} {('val ' + val) if val else ''} "
+                  f"lr {lr:.2e} gnorm {gnorm_v:.2f} {tok_s:,.0f} tok/s{mem}", flush=True)
+            log([step, step * global_batch * seq_len, f"{loss_v:.4f}", val, f"{lr:.3e}",
+                 f"{gnorm_v:.3f}", f"{tok_s:.0f}", scaler.get_scale() if scaler.is_enabled() else 1])
+            window_step, window_t = step, time.time()
 
         elapsed_h = (time.time() - t_start) / 3600
         # stop decision must be identical on all ranks
-        pause = elapsed_h > args.max_hours or (args.stop_at_step is not None and step >= args.stop_at_step)
-        stop = torch.tensor([1.0 if pause else 0.0], device=device)
-        if ddp:
-            dist.all_reduce(stop, op=dist.ReduceOp.MAX)
-        if stop.item() > 0:
+        at_stop_step = args.stop_at_step is not None and step >= args.stop_at_step
+        # on XLA, .item() stalls the pipeline, so the clock is consulted every 10 steps (~30 s on a TPU)
+        if (device_type != "xla" or step % 10 == 0 or at_stop_step) and comm.max(torch.tensor(
+                [1.0 if (elapsed_h > args.max_hours or at_stop_step) else 0.0], device=device)).item() > 0:
             if master:
                 print(f"time budget reached ({elapsed_h:.2f} h) — saving and exiting", flush=True)
             break
         if (time.time() - last_save) / 60 > tcfg["save_every_minutes"]:
             save()
             last_save = time.time()
+            window_step, window_t = step, time.time()  # saving time is not training throughput
 
     save(final=step >= total_steps, running=False)
     if hub:

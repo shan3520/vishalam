@@ -44,6 +44,18 @@ def _load_opt_state(optimizer, saved) -> None:
                 g["base_lr"] = b
 
 
+def _to_cpu(obj):
+    """Host copies of every tensor (CUDA/XLA state is not portable, and torch.save cannot write XLA
+    tensors); checkpoints are then the same on every backend and load with map_location anywhere."""
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu() if obj.device.type != "cpu" else obj
+    if isinstance(obj, dict):
+        return {k: _to_cpu(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return type(obj)(_to_cpu(v) for v in obj)
+    return obj
+
+
 def save_checkpoint(path: str | Path, model, optimizer, scaler, step: int, extra: dict) -> Path:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -61,7 +73,7 @@ def save_checkpoint(path: str | Path, model, optimizer, scaler, step: int, extra
         },
     }
     tmp = path.with_suffix(".tmp")
-    torch.save(state, tmp)
+    torch.save(_to_cpu(state), tmp)
     os.replace(tmp, path)
     return path
 
@@ -90,6 +102,6 @@ def save_weights(path: str | Path, model, model_config: dict, dtype=torch.float1
     """Weights-only export for inference / fine-tuning (half the size, no optimizer)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    sd = {k: v.to(dtype) if v.is_floating_point() else v for k, v in unwrap(model).state_dict().items()}
+    sd = {k: v.to(dtype) if v.is_floating_point() else v for k, v in _to_cpu(unwrap(model).state_dict()).items()}
     torch.save({"model": sd, "config": model_config}, path)
     return path
