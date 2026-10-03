@@ -21,9 +21,7 @@ def run_xla(cfg, shards, out, *extra, xla=True):
     env.setdefault("CPU_NUM_DEVICES", "2")
     r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, env=env, timeout=1800)
     if r.returncode != 0:  # full output on disk: pytest shortens long assertion messages
-        (out.parent / "last_failure.txt").write_text(r.stdout + "
----- stderr ----
-" + r.stderr)
+        (out.parent / "last_failure.txt").write_text(r.stdout + "\n---- stderr ----\n" + r.stderr)
     assert r.returncode == 0, f"failed, see {out.parent / 'last_failure.txt'}"
     return r.stdout
 

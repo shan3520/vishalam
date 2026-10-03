@@ -217,14 +217,10 @@ for n in ("1", "2"):  # one simulated chip first, then two (collectives)
     r = subprocess.run([sys.executable, "-m", "pytest", "-x", "-v", "-p", "no:cacheprovider",
                         "--basetemp", f"/tmp/xla{n}", "tests/test_pretrain_xla.py"],
                        capture_output=True, text=True, env=env)
-    print(f"==== CPU_NUM_DEVICES={n}
-", r.stdout[-4000:])
+    print(f"==== CPU_NUM_DEVICES={n}", r.stdout[-4000:], sep="\\n")
     for f in glob.glob(f"/tmp/xla{n}/**/last_failure.txt", recursive=True):
         text = open(f).read()
-        print(f"---- {f}
-{text[:3000]}
-[...]
-{text[-6000:]}")
+        print(f"---- {f}", text[:3000], "[...]", text[-6000:], sep="\\n")
     print(f"XLA TESTS ({n} device) " + ("PASSED" if r.returncode == 0 else "FAILED"))
 ''',
 ]
