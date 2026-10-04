@@ -211,7 +211,8 @@ resume = f"--resume-from {{prev[0]}}/run" if prev else ""
 print("resuming from:", prev or "scratch")
 cmd = (f"python -m vishalam.train.pretrain --xla --config configs/vishalam-{size}.yaml "
        f"--data-dirs {{','.join(DATA_DIRS)}} --tokenizer {{TOKENIZER}} {{resume}} --out {{WORK}}/run "
-       f"--max-hours {{hours_left(8.3):.2f}} --set micro_batch=4 --set grad_checkpointing=true")
+       f"--max-hours {{hours_left(8.3):.2f}} --set micro_batch=32 --set grad_checkpointing=true "
+       f"--set save_every_minutes=20")  # SPMD: micro batch = 4 sequences on each of the 8 chips
 run_watched(cmd)
 ''',
     ]

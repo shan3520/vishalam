@@ -22,7 +22,7 @@ train:
   weight_decay: 0.1
   grad_clip: 1.0
   z_loss: 1.0e-4
-  grad_checkpointing: false # (the TPU sessions turn it on, with micro 4 per chip: 16 GB HBM)
+  grad_checkpointing: false # (TPU sessions: on, micro 32 = 4 per chip, 16 GB HBM each)
   compile: true            # torch.compile on CUDA; falls back to eager automatically
   eval_every: 500
   eval_batches: 20
