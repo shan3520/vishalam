@@ -2,8 +2,8 @@
 
 Skipped unless torch_xla is installed (Linux only). On Kaggle CPU:
     PJRT_DEVICE=CPU CPU_NUM_DEVICES=1 python -m pytest tests/test_pretrain_xla.py
-One simulated chip: XLA's CPU backend cannot run multi-process collectives (they hang); the
-8-chip collectives are exercised on the real TPU (notebooks/make_kaggle_tpu_bench.py).
+The TPU path is SPMD (one process, the batch split over the chips), so several simulated CPU
+chips exercise the real data-parallel setup.
 """
 import os
 import subprocess
@@ -80,3 +80,19 @@ def test_xla_does_not_recompile_every_step(setup, optimizer):
     counts = {int(m.group(1)): int(m.group(2)) for m in re.finditer(r"step (\d+)/\d+ .*compiles (\d+)", out)}
     assert counts, out
     assert counts[30] == counts[10], counts  # nothing new to compile after the first steps
+
+
+def test_xla_four_chips_match_one(setup):
+    """Data parallel over 4 simulated chips computes the same training as one chip (same global
+    batch, same data order); only the batch layout differs."""
+    tmp, shards, cfg = setup
+    run_xla(cfg, shards, tmp / "x_1chip", "--max-steps", "20")
+    os.environ["CPU_NUM_DEVICES"] = "4"
+    try:
+        out = run_xla(cfg, shards, tmp / "x_4chips", "--max-steps", "20")
+    finally:
+        os.environ.pop("CPU_NUM_DEVICES")
+    assert "x4," in out, out  # "device=xla:0x4, ..."
+    one, four = losses(tmp / "x_1chip"), losses(tmp / "x_4chips")
+    for s in (1, 10, 20):
+        assert abs(one[s] - four[s]) < 2e-2, (s, one[s], four[s])

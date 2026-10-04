@@ -184,7 +184,6 @@ class Vishalam(nn.Module):
         if targets is None:
             return self.lm_head(x[:, -1:]).float(), None
 
-        flat_x = x.reshape(-1, x.size(-1))
         flat_targets = targets.reshape(-1)
         if loss_mask is None:
             weights = torch.ones(flat_targets.shape, device=x.device, dtype=torch.float32)
@@ -198,15 +197,19 @@ class Vishalam(nn.Module):
         else:
             # Chunked loss: never materialise (B*T, vocab) fp32 logits at once. Each chunk's logits are
             # recomputed in backward (checkpoint), so peak memory is one chunk instead of the whole batch.
+            # Chunks run along the sequence (all rows of the batch together): with the batch split
+            # across TPU chips, every chip then only touches its own rows.
             logits = None
             ce_sum = z_sum = torch.zeros((), device=x.device, dtype=torch.float32)
-            for s in range(0, flat_x.size(0), LOSS_CHUNK):
-                sl = slice(s, s + LOSS_CHUNK)
+            w = weights.view(B, T)
+            span = max(1, LOSS_CHUNK // B)
+            for s in range(0, T, span):
+                part = (x[:, s : s + span].reshape(-1, x.size(-1)), targets[:, s : s + span].reshape(-1),
+                        w[:, s : s + span].reshape(-1), z_loss)
                 if torch.is_grad_enabled():
-                    c, z = checkpoint(self._chunk_loss, flat_x[sl], flat_targets[sl], weights[sl], z_loss,
-                                      use_reentrant=False)
+                    c, z = checkpoint(self._chunk_loss, *part, use_reentrant=False)
                 else:
-                    c, z = self._chunk_loss(flat_x[sl], flat_targets[sl], weights[sl], z_loss)
+                    c, z = self._chunk_loss(*part)
                 ce_sum, z_sum = ce_sum + c, z_sum + z
         loss = ce_sum / denom
         if z_loss > 0:

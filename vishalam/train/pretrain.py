@@ -150,16 +150,13 @@ def main() -> None:
     ap.add_argument("--set", action="append", default=[], metavar="KEY=VALUE",
                     help="override a train: config value, e.g. --set micro_batch=1 (benchmarks)")
     ap.add_argument("--xla", action="store_true",
-                    help="PyTorch/XLA (Kaggle TPU v5e-8): one process per chip, bf16")
+                    help="PyTorch/XLA SPMD (Kaggle TPU v5e-8): one process drives all chips, the batch is "
+                         "split across them, bf16")
     args = ap.parse_args()
     if args.xla:
         # Kaggle's TPU VM describes a multi-host slice here; torch_xla would then wait for 8 hosts
         os.environ.pop("TPU_PROCESS_ADDRESSES", None)
-        import torch_xla
-
-        torch_xla.launch(train, args=(args,))
-    else:
-        train(0, args)
+    train(args)
 
 
 def xla_health() -> str:
@@ -174,19 +171,29 @@ def xla_health() -> str:
     return f"compiles {compiles} host-rss {rss:.1f}GB host-free {avail:.0f}GB"
 
 
-def train(index: int, args: argparse.Namespace) -> None:
+def train(args: argparse.Namespace) -> None:
     # ---- distributed setup ----
     ddp = "RANK" in os.environ and not args.xla
+    shard = None  # XLA SPMD: marks a batch tensor as split across the chips along its first dim
     if args.xla:
+        # SPMD, not one process per chip: 8 processes each compiled every graph themselves and
+        # together exhausted the TPU VM's 354 GB of host RAM. One process compiles once; the
+        # compiler splits the batch over the chips and inserts the gradient all-reduce itself.
+        import numpy as np
         import torch_xla
+        import torch_xla.distributed.spmd as xs
         import torch_xla.runtime as xr
         import torch_xla.utils.checkpoint as xla_ckpt
 
         import vishalam.model.model as vm
 
+        xr.use_spmd()
+        chips = xr.global_runtime_device_count()
+        mesh = xs.Mesh(np.arange(chips), (chips, 1), ("data", "model"))
+        shard = lambda t: xs.mark_sharding(t, mesh, ("data", None))  # noqa: E731
         # the XLA compiler can optimise plain torch checkpointing away; this version survives it
         vm.checkpoint = lambda fn, *a, use_reentrant=False: xla_ckpt.checkpoint(fn, *a)
-        rank, world = xr.global_ordinal(), xr.world_size()
+        rank, world = 0, 1  # one process; the chips are the compiler's business
         device = torch_xla.device()
         device_type = "xla"
     elif ddp:
@@ -229,7 +236,7 @@ def train(index: int, args: argparse.Namespace) -> None:
     model = Vishalam(mcfg).to(device)
     model.grad_checkpointing = bool(tcfg.get("grad_checkpointing", False))
     if master:
-        print(f"{name}: {unwrap(model).num_params() / 1e6:.1f}M params, device={device}x{world}, amp={amp_dtype}", flush=True)
+        print(f"{name}: {unwrap(model).num_params() / 1e6:.1f}M params, device={device}x{chips if shard else world}, amp={amp_dtype}", flush=True)
     optimizers = build_optimizers(model, tcfg, device_type)
     if master:
         print("optimizers:", " + ".join(f"{type(o).__name__}({sum(p.numel() for g in o.param_groups for p in g['params']) / 1e6:.1f}M)" for o in optimizers), flush=True)
@@ -248,6 +255,10 @@ def train(index: int, args: argparse.Namespace) -> None:
     total_steps = args.max_steps or int(tcfg["total_tokens"] // (global_batch * seq_len))
     vbatches = val_batches(store, manifest["val"], seq_len, tcfg["micro_batch"], tcfg["eval_batches"],
                            rank, world, device) if manifest.get("val") else []
+    if shard:
+        assert tcfg["micro_batch"] % chips == 0, f"micro_batch {tcfg['micro_batch']} must split over {chips} chips"
+        for x, y in vbatches:
+            shard(x), shard(y)
 
     # the shards must have been made with a tokenizer whose vocab matches the model
     try:
@@ -371,6 +382,9 @@ def train(index: int, args: argparse.Namespace) -> None:
             for g in opt.param_groups:
                 g["lr"] = g["base_lr"] * factor
         batches = loader.step_batches(step, device)
+        if shard:
+            for x, y in batches:
+                shard(x), shard(y)
 
         def forward_backward(m) -> torch.Tensor:
             total = torch.zeros((), device=device)

@@ -106,7 +106,7 @@ def test_grad_checkpointing_same_grads():
 def test_chunked_loss_matches_full_loss_and_grads(monkeypatch):
     import vishalam.model.model as mm
 
-    monkeypatch.setattr(mm, "LOSS_CHUNK", 7)  # several uneven chunks
+    monkeypatch.setattr(mm, "LOSS_CHUNK", 7)  # batch 2 -> spans of 3 positions: several, uneven
     torch.manual_seed(0)
     m = Vishalam(TINY)
     x = torch.randint(0, 300, (2, 16))
