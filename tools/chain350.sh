@@ -2,12 +2,13 @@
 # One 350M run across Kaggle's GPU (2xT4, 30 h/week) and TPU (v5e-8, 20 h/week) sessions: when a
 # session ends, the next resumes from its output (checkpoints are interchangeable). The TPU is ~6x
 # faster, so it goes first; the GPU fills in when the TPU quota is used up. If both are out of quota,
-# wait for the weekly reset. A session that did not save a checkpoint stops the chain (the next one
-# would otherwise silently start from scratch).
-#   bash tools/chain350.sh <running kernel slug> [max sessions]
-#   e.g. bash tools/chain350.sh vishalam-pretrain-350m-a 40
+# wait for the weekly reset. A session that never started (Kaggle's TPU queue can time out after a
+# day, leaving an empty log) is retried from the last checkpoint; a session that ran but did not
+# save one stops the chain (the next would otherwise silently start from scratch).
+#   bash tools/chain350.sh <running kernel slug> [kernel holding the latest checkpoint] [max sessions]
+#   e.g. bash tools/chain350.sh vishalam-pretrain-350m-a
 set -u
-CUR=$1; MAX=${2:-40}
+CUR=$1; PREV=${2:-$1}; MAX=${3:-40}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 DATA="vishalam-data-1,vishalam-data-2"
@@ -27,15 +28,20 @@ for n in $(seq 1 "$MAX"); do
   last=$($D logs "$CUR" | tail -30)
   echo "$last" | grep -E "^step|saved|paused|finished|exit code" | tail -4
   if echo "$last" | grep -q "^finished"; then echo "350m pretraining finished"; exit 0; fi
-  if ! echo "$last" | grep -q "^paused at step"; then
+  if echo "$last" | grep -q "^paused at step"; then
+    PREV=$CUR
+  elif [ -z "$(echo "$last" | tr -d '[:space:]')" ]; then
+    echo "$(stamp) $CUR never ran ($s, empty log) - retrying from $PREV"
+  else
     echo "$(stamp) $CUR ended ($s) without a clean pause - chain stopped, check its log"; exit 1
   fi
-  case "$CUR" in *-tpu-a) TPU=vishalam_pretrain_350m_tpu_b;; *) TPU=vishalam_pretrain_350m_tpu_a;; esac
-  case "$CUR" in *350m-a) GPU=vishalam_pretrain_350m_b;; *) GPU=vishalam_pretrain_350m_a;; esac
+  # a kernel cannot take its own output as input, hence the a/b pairs
+  case "$PREV" in *-tpu-a) TPU=vishalam_pretrain_350m_tpu_b;; *) TPU=vishalam_pretrain_350m_tpu_a;; esac
+  case "$PREV" in *350m-a) GPU=vishalam_pretrain_350m_b;; *) GPU=vishalam_pretrain_350m_a;; esac
   while :; do
-    r=$(push "$TPU" "$CUR"); echo "$(stamp) TPU push: $r"
+    r=$(push "$TPU" "$PREV"); echo "$(stamp) TPU push: $r"
     if echo "$r" | grep -q "successfully pushed"; then NEXT=$TPU; break; fi
-    r=$(push "$GPU" "$CUR"); echo "$(stamp) GPU push: $r"
+    r=$(push "$GPU" "$PREV"); echo "$(stamp) GPU push: $r"
     if echo "$r" | grep -q "successfully pushed"; then NEXT=$GPU; break; fi
     echo "$(stamp) no quota on either - retrying in 1 h"; sleep 3600
   done

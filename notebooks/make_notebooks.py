@@ -283,7 +283,11 @@ REWORD_CELLS = [
     SETUP, GPU_GUARD,
     '''\
 # --- Reword ~40% of requests with Qwen2.5-7B-Instruct-AWQ (Apache-2.0); output tagged ai-reworded ---
-get_ipython().system("pip install -q vllm")
+# vLLM in its own environment: installed into Kaggle's Python it replaced torch with a CUDA 13 build
+# that the preinstalled torchaudio rejects. 0.6.6 still supports T4 (Turing) GPUs with AWQ.
+get_ipython().system("pip install -q uv && uv python install 3.11 && uv venv -q -p 3.11 /tmp/vllm_env "
+                     "&& uv pip install -q -p /tmp/vllm_env/bin/python vllm==0.6.6.post1")
+VLLM_PY = "/tmp/vllm_env/bin/python"
 parts = [d + "/m1" for d in inputs_with("m1/train_parts", "vishalam-agent-data-p")]
 print("agent data parts:", len(parts))
 get_ipython().system(f"python -m vishalam.data.agent.build_m1 --out /tmp/m1 --merge {','.join(parts)}")
@@ -291,8 +295,8 @@ m1 = "/tmp/m1"
 os.makedirs(f"{WORK}/m1", exist_ok=True)
 for f in ["test_seen.jsonl", "test_unseen.jsonl", "stats.json"]:
     shutil.copy(f"{m1}/{f}", f"{WORK}/m1/{f}")
-get_ipython().system(f"python -m vishalam.data.agent.reword_qwen --inp {m1}/train.jsonl "
-                     f"--out {WORK}/m1/train_mixed.jsonl --fraction 0.4")
+get_ipython().system(f"{VLLM_PY} -m vishalam.data.agent.reword_qwen --inp {m1}/train.jsonl "
+                     f"--out {WORK}/m1/train_mixed.jsonl --fraction 0.4")  # one T4: tensor parallel over PCIe is a needless risk
 ''',
 ]
 
