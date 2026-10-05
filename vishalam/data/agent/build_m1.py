@@ -169,7 +169,7 @@ def main() -> None:
                                     ("test_unseen", args.n_test_unseen, True)]:
                 work = [(s + (7 if unseen else 3), k, unseen) for s, k in _split_work(n, args.workers, args.seed)]
                 with open(out / f"{name}.jsonl", "w", encoding="utf-8") as f:
-                    for tasks in pool.imap_unordered(_eval_worker, work):
+                    for tasks in pool.imap(_eval_worker, work):  # in order: same file on every build
                         for t in tasks:
                             f.write(json.dumps(t) + "\n")
                 print(f"{name}: {n} tasks", flush=True)
