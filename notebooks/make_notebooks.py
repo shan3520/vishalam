@@ -266,20 +266,28 @@ for n in ("1",):  # one simulated chip: XLA's CPU backend cannot run multi-proce
 ''',
 ]
 
-AGENTDATA_CELLS = [
-    SETUP,
-    '''\
-# --- Build the M1 agent dataset (CPU; ~6-8 h for 100k episodes on 4 cores) ---
-get_ipython().system(f"python -m vishalam.data.agent.build_m1 --out {WORK}/m1 --n-train 100000 --workers 4")
+AGENT_PARTS = 6  # 100k episodes take ~43 CPU-hours on Kaggle's 4 cores: 6 parallel sessions of ~7.5 h
+
+
+def agentdata_cells(part: int) -> list[str]:
+    return [
+        SETUP,
+        f'''\
+# --- M1 agent dataset, part {part}/{AGENT_PARTS} (CPU; every {AGENT_PARTS}th chunk of 1000 episodes) ---
+get_ipython().system(f"python -m vishalam.data.agent.build_m1 --out {{WORK}}/m1 --n-train 100000 --workers 4 "
+                     f"--part {part}/{AGENT_PARTS}")
 ''',
-]
+    ]
 
 REWORD_CELLS = [
     SETUP, GPU_GUARD,
     '''\
 # --- Reword ~40% of requests with Qwen2.5-7B-Instruct-AWQ (Apache-2.0); output tagged ai-reworded ---
 get_ipython().system("pip install -q vllm")
-m1 = inputs_with("m1/train.jsonl", "vishalam-agent-data")[0] + "/m1"
+parts = [d + "/m1" for d in inputs_with("m1/train_parts", "vishalam-agent-data-p")]
+print("agent data parts:", len(parts))
+get_ipython().system(f"python -m vishalam.data.agent.build_m1 --out /tmp/m1 --merge {','.join(parts)}")
+m1 = "/tmp/m1"
 os.makedirs(f"{WORK}/m1", exist_ok=True)
 for f in ["test_seen.jsonl", "test_unseen.jsonl", "stats.json"]:
     shutil.copy(f"{m1}/{f}", f"{WORK}/m1/{f}")
@@ -384,7 +392,8 @@ def main() -> None:
     kaggle_kernel("vishalam_pretrain_30m_muon", "vishalam pretrain 30m muon", pretrain_cells("30m-muon"), gpu=True)
     kaggle_kernel("vishalam_bench_350m", "vishalam bench 350m", BENCH_350M_CELLS, gpu=True)
     kaggle_kernel("vishalam_xla_cputest", "vishalam xla cputest", XLA_CPUTEST_CELLS, gpu=False)
-    kaggle_kernel("vishalam_agent_data", "vishalam agent data", AGENTDATA_CELLS, gpu=False)
+    for part in range(AGENT_PARTS):
+        kaggle_kernel(f"vishalam_agent_data_p{part}", f"vishalam agent data p{part}", agentdata_cells(part), gpu=False)
     kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
     for size in ["125m", "350m"]:
         for side in "ab":
