@@ -286,7 +286,7 @@ REWORD_CELLS = [
 # vLLM in its own environment: installed into Kaggle's Python it replaced torch with a CUDA 13 build
 # that the preinstalled torchaudio rejects. 0.6.6 still supports T4 (Turing) GPUs with AWQ.
 get_ipython().system("pip install -q uv && uv python install 3.11 && uv venv -q -p 3.11 /tmp/vllm_env "
-                     "&& uv pip install -q -p /tmp/vllm_env/bin/python vllm==0.6.6.post1")
+                     "&& uv pip install -q -p /tmp/vllm_env/bin/python vllm==0.6.6.post1 setuptools")
 VLLM_PY = "/tmp/vllm_env/bin/python"
 parts = [d + "/m1" for d in inputs_with("m1/train_parts", "vishalam-agent-data-p")]
 print("agent data parts:", len(parts))

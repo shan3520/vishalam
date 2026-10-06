@@ -66,3 +66,25 @@ def test_checkpoint_formats(tmp_path):
     fresh = build_optimizers(m, {"lr": 1e-3, "weight_decay": 0.1}, "cpu")
     assert load_checkpoint(tmp_path / "old.pt", m, fresh)["step"] == 5
     assert all(g["base_lr"] == 1e-3 for g in fresh[0].param_groups)
+
+
+def test_gpu_checkpoint_loads_without_its_fused_adamw_flag(tmp_path):
+    """A GPU session saves AdamW(fused=True); a TPU/CPU session loading it must keep its own
+    implementation (on XLA the fused CUDA path crashes)."""
+    torch.manual_seed(0)
+    gpu = Vishalam(TINY)
+    gpu_opts = [torch.optim.AdamW(gpu.parameters(), lr=1e-3, fused=True)]
+    x = torch.randint(0, TINY.vocab_size, (2, 8))
+    gpu(x, x)[1].backward()
+    gpu_opts[0].step()
+    save_checkpoint(tmp_path / "ckpt.pt", gpu, gpu_opts, None, 1, {})
+
+    tpu = Vishalam(TINY)
+    tpu_opts = [torch.optim.AdamW(tpu.parameters(), lr=1e-3, foreach=True)]
+    load_checkpoint(tmp_path / "ckpt.pt", tpu, tpu_opts)
+    g = tpu_opts[0].param_groups[0]
+    assert not g["fused"] and g["foreach"]
+    state = next(iter(tpu_opts[0].state.values()))
+    assert state["step"].device.type == "cpu" and float(state["step"]) == 1.0
+    tpu(x, x)[1].backward()
+    tpu_opts[0].step()  # the non-fused path runs with the loaded state

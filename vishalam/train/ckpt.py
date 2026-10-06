@@ -30,6 +30,9 @@ def _opt_state(optimizer):
     return optimizer.state_dict()
 
 
+_IMPL_FLAGS = ("fused", "foreach", "capturable", "differentiable")
+
+
 def _load_opt_state(optimizer, saved) -> None:
     opts = list(optimizer) if isinstance(optimizer, (list, tuple)) else [optimizer]
     saved = saved if isinstance(saved, list) else [saved]
@@ -38,6 +41,11 @@ def _load_opt_state(optimizer, saved) -> None:
                          "(did the optimizer setting change between sessions?)")
     for opt, sd in zip(opts, saved):
         base = [g.get("base_lr") for g in opt.param_groups]
+        # How the update is computed belongs to this machine, not to the checkpoint: a GPU session
+        # saves fused=True (CUDA kernels), which a TPU session must not inherit. Set before loading,
+        # since load_state_dict also decides from these flags where to put state such as `step`.
+        sd = {**sd, "param_groups": [{**g, **{k: cur[k] for k in _IMPL_FLAGS if k in cur}}
+                                     for g, cur in zip(sd["param_groups"], opt.param_groups)]}
         opt.load_state_dict(sd)
         for g, b in zip(opt.param_groups, base):  # older checkpoints predate base_lr
             if b is not None:
