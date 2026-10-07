@@ -177,7 +177,7 @@ def run_watched(cmd, silent_min=40):
     print("host:", sh("nproc"), "cpus,", sh("free -g | awk '/Mem/ {print $2}'"), "GB RAM, cgroup limit",
           sh("cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes"))
     proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
-    last, t_run = [time.time()], time.time()
+    last, t_run, seen = [time.time()], time.time(), []
     def watch():
         while proc.poll() is None:
             if time.time() - last[0] > silent_min * 60:
@@ -188,6 +188,8 @@ def run_watched(cmd, silent_min=40):
     threading.Thread(target=watch, daemon=True).start()
     for line in proc.stdout:
         last[0] = time.time()
+        if "RESOURCE_EXHAUSTED" in line or "saved checkpoint" in line:
+            seen.append(line)
         if not any(k in line for k in ("Warning", "warnings.warn", "symbolize")):
             print(line, end="", flush=True)
     code = proc.wait()
@@ -196,6 +198,7 @@ def run_watched(cmd, silent_min=40):
         print(sh("cat /sys/fs/cgroup/memory.events 2>/dev/null"))
         print(sh("dmesg -T 2>/dev/null | grep -i -E 'killed process|out of memory|oom' | tail -10")
               or "(dmesg not readable)")
+    run_watched.hbm_oom = any("RESOURCE_EXHAUSTED" in l for l in seen) and not any("saved checkpoint" in l for l in seen)
     return code
 '''
 
@@ -209,11 +212,17 @@ def pretrain_tpu_cells(size: str) -> list[str]:
 prev = inputs_with("run/ckpt.pt", "vishalam-pretrain-{size}-")
 resume = f"--resume-from {{prev[0]}}/run" if prev else ""
 print("resuming from:", prev or "scratch")
-cmd = (f"python -m vishalam.train.pretrain --xla --config configs/vishalam-{size}.yaml "
-       f"--data-dirs {{','.join(DATA_DIRS)}} --tokenizer {{TOKENIZER}} {{resume}} --out {{WORK}}/run "
-       f"--max-hours {{hours_left(8.3):.2f}} --set micro_batch=32 --set grad_checkpointing=true "
-       f"--set save_every_minutes=20")  # SPMD: micro batch = 4 sequences on each of the 8 chips
-run_watched(cmd)
+# SPMD micro batch over 8 chips: 2 sequences per chip (4 ran out of the 16 GB HBM); if even that
+# does not fit, retry at once with 1 per chip rather than lose a session that queued for hours
+for micro in (16, 8):
+    cmd = (f"python -m vishalam.train.pretrain --xla --config configs/vishalam-{size}.yaml "
+           f"--data-dirs {{','.join(DATA_DIRS)}} --tokenizer {{TOKENIZER}} {{resume}} --out {{WORK}}/run "
+           f"--max-hours {{hours_left(8.3):.2f}} --set micro_batch={{micro}} --set grad_checkpointing=true "
+           f"--set save_every_minutes=20")
+    code = run_watched(cmd)
+    if not (code and run_watched.hbm_oom):
+        break
+    print(f"TPU memory too small for micro_batch={{micro}}; retrying smaller", flush=True)
 ''',
     ]
 
@@ -286,7 +295,7 @@ REWORD_CELLS = [
 # vLLM in its own environment: installed into Kaggle's Python it replaced torch with a CUDA 13 build
 # that the preinstalled torchaudio rejects. 0.6.6 still supports T4 (Turing) GPUs with AWQ.
 get_ipython().system("pip install -q uv && uv python install 3.11 && uv venv -q -p 3.11 /tmp/vllm_env "
-                     "&& uv pip install -q -p /tmp/vllm_env/bin/python vllm==0.6.6.post1 setuptools")
+                     "&& uv pip install -q -p /tmp/vllm_env/bin/python vllm==0.6.6.post1 transformers==4.46.3 setuptools")
 VLLM_PY = "/tmp/vllm_env/bin/python"
 parts = [d + "/m1" for d in inputs_with("m1/train_parts", "vishalam-agent-data-p")]
 print("agent data parts:", len(parts))
