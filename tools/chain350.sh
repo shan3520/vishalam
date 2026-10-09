@@ -37,11 +37,14 @@ for n in $(seq 1 "$MAX"); do
     # a real Kaggle status is one upper-case word; anything else (DNS/HTTP error text) is transient
     case "$s" in RUNNING|QUEUED|NEW|""|*[!A-Z_]*) sleep 600;; *) break;; esac
   done
-  last=$($D logs "$CUR" | tail -30)
+  last=$($D logs "$CUR")
   echo "$last" | grep -E "^step|saved|paused|finished|exit code" | tail -4
   if echo "$last" | grep -q "^finished"; then echo "350m pretraining finished"; exit 0; fi
   if echo "$last" | grep -q "^paused at step"; then
     PREV=$CUR
+  elif echo "$last" | grep -q "^saved checkpoint at step"; then
+    # crashed, but after an (atomically written) checkpoint: continue from that one
+    echo "$(stamp) $CUR crashed after saving a checkpoint - continuing from it"; PREV=$CUR
   elif [ -z "$(echo "$last" | tr -d '[:space:]')" ]; then
     echo "$(stamp) $CUR never ran ($s, empty log) - retrying from $PREV"
   else

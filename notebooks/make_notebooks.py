@@ -212,17 +212,25 @@ def pretrain_tpu_cells(size: str) -> list[str]:
 prev = inputs_with("run/ckpt.pt", "vishalam-pretrain-{size}-")
 resume = f"--resume-from {{prev[0]}}/run" if prev else ""
 print("resuming from:", prev or "scratch")
-# SPMD micro batch over 8 chips: 2 sequences per chip (4 ran out of the 16 GB HBM); if even that
-# does not fit, retry at once with 1 per chip rather than lose a session that queued for hours
-for micro in (16, 8):
+# A TPU session can take a day to get, so a failure inside it is retried here instead of ending it:
+#  * out of TPU memory at the start -> smaller micro batch (SPMD over 8 chips: 2, then 1 per chip)
+#  * any crash after a checkpoint was saved -> restart; training resumes from {{WORK}}/run/ckpt.pt
+micros, crashes = [16, 8], 0
+while hours_left(8.3) > 0.4:
     cmd = (f"python -m vishalam.train.pretrain --xla --config configs/vishalam-{size}.yaml "
            f"--data-dirs {{','.join(DATA_DIRS)}} --tokenizer {{TOKENIZER}} {{resume}} --out {{WORK}}/run "
-           f"--max-hours {{hours_left(8.3):.2f}} --set micro_batch={{micro}} --set grad_checkpointing=true "
+           f"--max-hours {{hours_left(8.3):.2f}} --set micro_batch={{micros[0]}} --set grad_checkpointing=true "
            f"--set save_every_minutes=20")
     code = run_watched(cmd)
-    if not (code and run_watched.hbm_oom):
+    if code == 0:
         break
-    print(f"TPU memory too small for micro_batch={{micro}}; retrying smaller", flush=True)
+    if run_watched.hbm_oom and len(micros) > 1:
+        print(f"TPU memory too small for micro_batch={{micros.pop(0)}}; retrying smaller", flush=True)
+        continue
+    crashes += 1
+    if crashes > 4 or not os.path.exists(f"{{WORK}}/run/ckpt.pt"):
+        break
+    print(f"training crashed (exit {{code}}); restarting from this session's last checkpoint", flush=True)
 ''',
     ]
 

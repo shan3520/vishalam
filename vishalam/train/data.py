@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from bisect import bisect_right
 from collections import OrderedDict
 from pathlib import Path
@@ -113,17 +114,37 @@ class GlobalSampler:
         self.cum = np.cumsum([0] + self.chunks)
         self.total = int(self.cum[-1])
         assert self.total > 0, "no training chunks"
-        self._maps: OrderedDict[int, np.memmap] = OrderedDict()
+        self._files: OrderedDict[int, object] = OrderedDict()
         self._perms: OrderedDict[tuple[int, int], np.ndarray] = OrderedDict()
 
-    def _memmap(self, s: int) -> np.memmap:
-        if s not in self._maps:
-            self._maps[s] = np.memmap(self.store.path(self.names[s]), dtype=np.uint16, mode="r")
-            if len(self._maps) > 2:
-                self._maps.popitem(last=False)
+    def _file(self, s: int):
+        if s not in self._files:
+            self._files[s] = open(self.store.path(self.names[s]), "rb", buffering=0)
+            if len(self._files) > 2:
+                self._files.popitem(last=False)[1].close()
             if s + 1 < len(self.names):
                 self.store.prefetch(self.names[s + 1])
-        return self._maps[s]
+        return self._files[s]
+
+    def read(self, s: int, start: int, n: int) -> np.ndarray:
+        """Tokens [start, start + n) of shard s, as int64. Plain reads, not np.memmap: on a network-
+        mounted input (Kaggle's TPU VM) a failed page-in of a memory map kills the process with SIGBUS,
+        while a failed read raises OSError, which is retried with a fresh file handle."""
+        for attempt in range(6):
+            try:
+                f = self._file(s)
+                f.seek(2 * start)
+                buf = f.read(2 * n)
+                if len(buf) != 2 * n:
+                    raise OSError(f"short read: {len(buf)} of {2 * n} bytes from {self.names[s]}")
+                return np.frombuffer(buf, dtype=np.uint16).astype(np.int64)
+            except OSError:
+                if attempt == 5:
+                    raise
+                old = self._files.pop(s, None)
+                if old is not None:
+                    old.close()
+                time.sleep(2 ** attempt)
 
     def _perm(self, epoch: int, s: int) -> np.ndarray:
         key = (epoch, s)
@@ -139,7 +160,7 @@ class GlobalSampler:
         s = bisect_right(self.cum, r) - 1
         c = int(self._perm(epoch, s)[r - self.cum[s]])
         start = c * self.seq_len
-        return np.asarray(self._memmap(s)[start : start + self.seq_len + 1], dtype=np.int64)
+        return self.read(s, start, self.seq_len + 1)
 
 
 class TrainLoader:
@@ -182,8 +203,7 @@ def val_batches(store: ShardStore, shards: list[dict], seq_len: int, micro_batch
         for g in idx[i : i + micro_batch]:
             s = bisect_right(samp.cum, g) - 1
             c = g - samp.cum[s]
-            mm = samp._memmap(s)
-            rows.append(np.asarray(mm[c * seq_len : c * seq_len + seq_len + 1], dtype=np.int64))
+            rows.append(samp.read(s, c * seq_len, seq_len + 1))
         arr = torch.from_numpy(np.stack(rows)).to(device)
         out.append((arr[:, :-1], arr[:, 1:]))
     return out
