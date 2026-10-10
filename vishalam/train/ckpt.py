@@ -91,7 +91,9 @@ def load_checkpoint(path: str | Path, model, optimizer=None, scaler=None, map_lo
     unwrap(model).load_state_dict(state["model"])
     if optimizer is not None:
         _load_opt_state(optimizer, state["optimizer"])
-    if scaler is not None and state.get("scaler") is not None:
+    # A TPU (bf16) or CPU session saves a disabled scaler's empty state; an fp16 GPU session resuming
+    # from it starts a fresh scaler, which finds its scale again within a few steps.
+    if scaler is not None and scaler.is_enabled() and state.get("scaler"):
         scaler.load_state_dict(state["scaler"])
     rng = state.get("rng") or {}
     if rng:

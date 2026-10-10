@@ -88,3 +88,26 @@ def test_gpu_checkpoint_loads_without_its_fused_adamw_flag(tmp_path):
     assert state["step"].device.type == "cpu" and float(state["step"]) == 1.0
     tpu(x, x)[1].backward()
     tpu_opts[0].step()  # the non-fused path runs with the loaded state
+
+
+def test_tpu_checkpoint_loads_into_an_fp16_gpu_session(tmp_path):
+    """TPU sessions (bf16) save a disabled GradScaler's empty state; a T4 (fp16) session with an
+    enabled scaler must still resume from it."""
+    torch.manual_seed(0)
+    tpu = Vishalam(TINY)
+    opts = [torch.optim.AdamW(tpu.parameters(), lr=1e-3, foreach=True)]
+    save_checkpoint(tmp_path / "ckpt.pt", tpu, opts, torch.amp.GradScaler("cpu", enabled=False), 7, {})
+
+    gpu = Vishalam(TINY)
+    gpu_opts = [torch.optim.AdamW(gpu.parameters(), lr=1e-3)]
+    scaler = torch.amp.GradScaler("cpu", enabled=True)
+    state = load_checkpoint(tmp_path / "ckpt.pt", gpu, gpu_opts, scaler)
+    assert state["step"] == 7 and scaler.is_enabled() and scaler.get_scale() == 65536.0
+
+    # and an enabled scaler's state still round-trips
+    scaler.scale(torch.ones(()))  # a scaler initialises its scale on first use
+    scaler.update(1024.0)
+    save_checkpoint(tmp_path / "gpu.pt", gpu, gpu_opts, scaler, 8, {})
+    again = torch.amp.GradScaler("cpu", enabled=True)
+    load_checkpoint(tmp_path / "gpu.pt", Vishalam(TINY), [torch.optim.AdamW(Vishalam(TINY).parameters())], again)
+    assert again.get_scale() == 1024.0
