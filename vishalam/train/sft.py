@@ -6,6 +6,10 @@ Kaggle (2x T4): prefix with `torchrun --standalone --nproc_per_node=2`, add --ck
 
 Episodes are packed back-to-back into seq_len windows. The loss only counts tokens the model has to
 produce (tool calls, done message, end-of-text); requests and tool results are context only.
+
+With `mix_fraction` (config) and --mix-data-dirs, that share of every step's rows is pretraining text
+(full loss), so the model keeps its general code/English knowledge instead of narrowing to the
+agent episodes' task families.
 """
 from __future__ import annotations
 
@@ -78,6 +82,18 @@ class PackedEpochs:
         return chunk[:-1], chunk[1:], m
 
 
+def split_row(g: int, global_batch: int, n_mix: int) -> tuple[str, int]:
+    """Global row g -> ("mix", index into pretraining samples) or ("sft", index into SFT windows).
+    Each step's `n_mix` pretraining rows are spread evenly over its `global_batch` rows; every SFT
+    window is still used exactly once per epoch, in order. Depends only on g: resume is exact and
+    the split is the same for any number of GPUs."""
+    step, p = divmod(g, global_batch)
+    k = ((p + 1) * n_mix) // global_batch  # pretraining rows at positions <= p
+    if k > (p * n_mix) // global_batch:
+        return "mix", step * n_mix + k - 1
+    return "sft", step * (global_batch - n_mix) + p - k
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", required=True)
@@ -91,6 +107,8 @@ def main() -> None:
     ap.add_argument("--max-hours", type=float, default=1e9)
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--seed", type=int, default=1234)
+    ap.add_argument("--mix-data-dirs", default=None,
+                    help="comma list of pretraining shard dirs (manifest.json) for the config's mix_fraction")
     args = ap.parse_args()
 
     ddp = "RANK" in os.environ
@@ -144,11 +162,18 @@ def main() -> None:
     global_batch, micro = tcfg["global_batch_seqs"], tcfg["micro_batch"]
     assert global_batch % (micro * world) == 0
     accum = global_batch // (micro * world)
-    total_steps = args.max_steps or math.ceil(tcfg["epochs"] * data.windows_per_epoch / global_batch)
+    n_mix, mix = 0, None
+    if args.mix_data_dirs and tcfg.get("mix_fraction", 0.0) > 0:
+        from vishalam.train.data import GlobalSampler, ShardStore, merge_local_manifests
+
+        n_mix = round(global_batch * tcfg["mix_fraction"])
+        manifest = merge_local_manifests([d for d in args.mix_data_dirs.split(",") if d])
+        mix = GlobalSampler(ShardStore(out / "_mix_cache"), manifest["train"], seq_len, seed=args.seed + 1)
+    total_steps = args.max_steps or math.ceil(tcfg["epochs"] * data.windows_per_epoch / (global_batch - n_mix))
     if master:
         n_tok = sum(len(x) for x in ids)
         print(f"{name}: {len(ids)} episodes, {n_tok / 1e6:.1f}M tokens, {data.windows_per_epoch} windows/epoch, "
-              f"{total_steps} steps", flush=True)
+              f"{total_steps} steps, {n_mix}/{global_batch} rows per step from pretraining text", flush=True)
 
     val = None
     if args.val_episodes:
@@ -192,8 +217,16 @@ def main() -> None:
     if master and not log_path.exists():
         log_path.write_text("step,loss,val_loss,lr,grad_norm,tok_per_s\n")
 
-    def batch(g0: int, source: PackedEpochs):
-        xs, ys, ms = zip(*(source.window(g) for g in range(g0, g0 + micro)))
+    def train_row(g: int):
+        kind, i = split_row(g, global_batch, n_mix)
+        if kind == "sft":
+            return data.window(i)
+        seq = mix.sample(i)
+        return seq[:-1], seq[1:], np.ones(seq_len, dtype=np.uint8)
+
+    def batch(g0: int, source: PackedEpochs | None = None):
+        rows = (train_row(g) if source is None else source.window(g) for g in range(g0, g0 + micro))
+        xs, ys, ms = zip(*rows)
         to = lambda a, dt: torch.from_numpy(np.stack(a)).to(device=device, dtype=dt)
         return to(xs, torch.long), to(ys, torch.long), to(ms, torch.float32)
 
@@ -236,7 +269,7 @@ def main() -> None:
         loss_sum = torch.zeros((), device=device)
         base = step * global_batch + rank * micro * accum
         for i in range(accum):
-            x, y, m = batch(base + i * micro, data)
+            x, y, m = batch(base + i * micro)
             sync = contextlib.nullcontext() if (not ddp or i == accum - 1) else model.no_sync()
             with sync:
                 with autocast():

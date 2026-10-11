@@ -6,7 +6,7 @@ from typing import Callable
 
 import torch
 
-from vishalam.agent.format import ParseError, Step, ToolCall, parse_call, request_ids, result_ids
+from vishalam.agent.format import CallGrammar, ParseError, Step, ToolCall, parse_call, request_ids, result_ids
 from vishalam.agent.tools import Workspace
 from vishalam.infer.generate import Session
 from vishalam.tokenizer.bpe import Tokenizer
@@ -25,7 +25,7 @@ class AgentResult:
 class Agent:
     def __init__(self, model, cfg, device: str, tok: Tokenizer, max_steps: int = 24,
                  max_test_runs: int = 4, temperature: float = 0.0, seed: int | None = None,
-                 max_call_tokens: int = 1500):
+                 max_call_tokens: int = 1500, grammar: bool = True):
         self.model, self.cfg, self.device, self.tok = model, cfg, device, tok
         self.max_steps = max_steps
         self.max_test_runs = max_test_runs  # 1 first run + up to 3 fix attempts
@@ -35,6 +35,7 @@ class Agent:
         if seed is not None:
             self.gen = torch.Generator(device=device if device != "cpu" else "cpu").manual_seed(seed)
         self.stop_ids = {tok.sid("<|end|>"), tok.eot_id}
+        self.grammar = CallGrammar(tok) if grammar else None  # constrained decoding of tool calls
 
     def run(self, request: str, ws: Workspace, on_event: Callable[[dict], None] | None = None) -> AgentResult:
         emit = on_event or (lambda e: None)
@@ -47,7 +48,8 @@ class Agent:
             return res
         for _ in range(self.max_steps):
             emit({"type": "thinking"})
-            out = sess.sample(self.stop_ids, self.max_call_tokens, self.temperature, generator=self.gen)
+            out = sess.sample(self.stop_ids, self.max_call_tokens, self.temperature, generator=self.gen,
+                              grammar=self.grammar)
             if not out or out[-1] == self.tok.eot_id and len(out) == 1:
                 res.stop_reason = "model stopped without calling done"
                 break

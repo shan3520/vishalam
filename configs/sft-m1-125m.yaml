@@ -5,7 +5,8 @@ train:
   seq_len: 4096
   micro_batch: 4
   global_batch_seqs: 32     # 131k tokens per step
-  epochs: 3
+  epochs: 1                 # 3 epochs memorised the 85 task families: 93% seen vs 3% unseen (125M)
+  mix_fraction: 0.2         # 20% of each step is pretraining text (keeps general code knowledge)
   lr: 1.0e-4
   min_lr_ratio: 0.1
   warmup_steps: 100

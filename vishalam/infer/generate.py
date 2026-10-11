@@ -63,13 +63,16 @@ class Session:
 
     @torch.no_grad()
     def sample(self, stop_ids: set[int], max_new: int = 1024, temperature: float = 0.0,
-               top_p: float = 0.95, generator: torch.Generator | None = None) -> list[int]:
-        """Generate until a stop id (included in the output) or max_new tokens."""
+               top_p: float = 0.95, generator: torch.Generator | None = None, grammar=None) -> list[int]:
+        """Generate until a stop id (included in the output) or max_new tokens. `grammar` (e.g.
+        agent.format.CallGrammar) masks the logits so only grammatical continuations are possible."""
         out: list[int] = []
         for _ in range(max_new):
             if self._last_logits is None or self.remaining <= 0:
                 break
             logits = self._last_logits
+            if grammar is not None:
+                logits = logits + grammar.mask(out, logits)
             if temperature <= 0:
                 nxt = int(torch.argmax(logits))
             else:

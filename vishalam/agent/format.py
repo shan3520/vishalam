@@ -107,6 +107,44 @@ def training_example(tok: Tokenizer, request: str, steps: list[Step]) -> tuple[l
     return ids[:-1], ids[1:], is_model[1:]
 
 
+class CallGrammar:
+    """Constrained decoding for one tool call: a logit mask that lets the model produce only calls
+    `parse_call` accepts. A call starts with a tool token, then that tool's argument tokens in order,
+    each followed by free text (ordinary tokens only), then <|end|>. The model still chooses the tool
+    and writes every argument; it just cannot leave the protocol (a 125M agent broke it on 39% of
+    unfamiliar tasks, and 92% of HumanEval prompts)."""
+
+    def __init__(self, tok: Tokenizer):
+        self.tool = {tok.sid(f"<|{n}|>"): n for n in TOOLS}
+        self.arg = {a: tok.sid(f"<|{a}|>") for args in TOOLS.values() for a in args}
+        self.end = tok.sid("<|end|>")
+        self.n_text = min(tok.id_to_special)  # ordinary tokens are 0 .. n_text-1, specials after
+        self._masks: dict[tuple, object] = {}
+
+    def allowed(self, prefix: list[int]) -> tuple[tuple[int, ...], bool]:
+        """(special tokens allowed next, whether ordinary text is allowed next) after `prefix`."""
+        if not prefix:
+            return tuple(self.tool), False
+        args = TOOLS[self.tool[prefix[0]]]
+        k = sum(1 for t in prefix[1:] if t >= self.n_text)  # argument tokens so far
+        nxt = (self.arg[args[k]],) if k < len(args) else (self.end,)
+        return nxt, k > 0  # text only inside an argument
+
+    def mask(self, prefix: list[int], logits):
+        """Additive mask (0 allowed, -inf forbidden) for the logits of the next token."""
+        import torch
+
+        key = (*self.allowed(prefix), logits.shape[-1], logits.device)
+        if key not in self._masks:
+            specials, text = key[0], key[1]
+            m = torch.full(logits.shape, float("-inf"), device=logits.device)
+            if text:
+                m[: self.n_text] = 0.0
+            m[list(specials)] = 0.0
+            self._masks[key] = m
+        return self._masks[key]
+
+
 class ParseError(ValueError):
     pass
 

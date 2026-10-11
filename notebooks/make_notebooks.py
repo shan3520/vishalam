@@ -320,10 +320,13 @@ get_ipython().system(f"{VLLM_PY} -m vishalam.data.agent.reword_qwen --inp {m1}/t
 
 def sft_cells(size: str) -> list[str]:
     return [
-        SETUP, GPU_GUARD,
+        SETUP, GPU_GUARD, DATA_INPUTS,
         f'''\
 # --- Agent fine-tuning session (ping-pong resume like pretraining) ---
-TOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
+# MBPP train/validation/prompt splits as extra human-written tasks (CC-BY-4.0; the test split is eval)
+mbpp = f"{{WORK}}/mbpp_train.jsonl"
+if not os.path.exists(mbpp):
+    get_ipython().system(f"python -m vishalam.data.agent.mbpp_episodes --out {{mbpp}} --repeat 8")
 m1 = inputs_with("m1/train_mixed.jsonl", "vishalam-reword")[0] + "/m1"
 init = inputs_with("run/model.pt", "vishalam-pretrain-{size}-")[0] + "/run/model.pt"
 extra = " ".join(f"--episodes {{d}}/self.jsonl" for d in inputs_with("self.jsonl", "vishalam-eval-m1-{size}"))
@@ -332,14 +335,16 @@ resume = f"--resume-from {{prev[0]}}/sft" if prev else ""
 n = torch.cuda.device_count()
 launcher = f"torchrun --standalone --nproc_per_node={{n}}" if n > 1 else "python"
 get_ipython().system(f"{{launcher}} -m vishalam.train.sft --config configs/sft-m1-{size}.yaml --init {{init}} "
-                     f"--episodes {{m1}}/train_mixed.jsonl {{extra}} --tokenizer {{TOKENIZER}} {{resume}} "
-                     f"--out {{WORK}}/sft --max-hours {{hours_left():.2f}}")
+                     f"--episodes {{m1}}/train_mixed.jsonl --episodes {{mbpp}} {{extra}} --tokenizer {{TOKENIZER}} "
+                     f"{{resume}} --mix-data-dirs {{','.join(DATA_DIRS)}} --out {{WORK}}/sft --max-hours {{hours_left():.2f}}")
 ''',
     ]
 
 
-def eval_cells(size: str) -> list[str]:
-    return [
+def eval_cells(size: str, expert_iter: bool = False) -> list[str]:
+    """Evaluation; optionally one expert-iteration round (off by default: it used ~5 of 12 GPU hours
+    and, for the 125M agent, mostly re-collected task families the model already solved)."""
+    cells = [
         SETUP, GPU_GUARD,
         f'''\
 # --- Evaluate the agent (generated seen/unseen, hand-written, HumanEval, MBPP) ---
@@ -350,12 +355,14 @@ get_ipython().system(f"python -m vishalam.eval.run --weights {{MODEL}} --tokeniz
                      f"--sets test_seen,test_unseen,handwritten,humaneval,mbpp --data {{m1}} "
                      f"--sandbox subprocess --out {{WORK}}/results.json")
 ''',
-        '''\
+    ]
+    if expert_iter:
+        cells.append('''\
 # --- One expert-iteration round: self-generated, hidden-test-verified episodes for the next SFT ---
 get_ipython().system(f"python -m vishalam.train.expert_iter --weights {MODEL} --tokenizer {TOKENIZER} "
                      f"--n-tasks 3000 --samples 4 --out {WORK}/self.jsonl --max-hours {hours_left():.2f}")
-''',
-    ]
+''')
+    return cells
 
 
 def notebook(cells: list[str]) -> dict:

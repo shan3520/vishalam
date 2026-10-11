@@ -60,11 +60,12 @@ def main() -> None:
     ap.add_argument("--device", default=None)
     ap.add_argument("--sandbox", choices=["auto", "subprocess"], default="auto")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--no-grammar", action="store_true", help="free decoding of tool calls (for comparison)")
     args = ap.parse_args()
 
     model, cfg, device = load_model(args.weights, args.device)
     tok = load_tokenizer(args.tokenizer)
-    agent = Agent(model, cfg, device, tok)
+    agent = Agent(model, cfg, device, tok, grammar=not args.no_grammar)
     sandbox = SubprocessSandbox() if args.sandbox == "subprocess" else default_sandbox()
 
     loaders = {
