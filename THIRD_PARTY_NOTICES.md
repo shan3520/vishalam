@@ -20,6 +20,11 @@ pretraining tokens.
 - License: Open Data Commons Attribution License (ODC-BY) v1.0. Also subject to the Common Crawl
   terms of use.
 
+**MBPP, `google-research-datasets/mbpp`** (Austin et al., 2021), train, validation and prompt splits
+(474 tasks): turned into agent fine-tuning episodes (`vishalam/data/agent/mbpp_episodes.py`). The
+500-task test split is not trained on; it is an evaluation benchmark (below).
+- License: Creative Commons Attribution 4.0 (CC-BY-4.0). Google Research.
+
 ## Models used during data creation
 
 **Qwen2.5-7B-Instruct (AWQ build), `Qwen/Qwen2.5-7B-Instruct-AWQ`**: used only to reword a disclosed
@@ -29,8 +34,8 @@ share of training requests. It is not part of the Vishalam model.
 ## Evaluation benchmarks (never trained on; overlap removed from training data)
 
 - **HumanEval, `openai/openai_humaneval`**: MIT License. Copyright (c) 2021 OpenAI.
-- **MBPP, `google-research-datasets/mbpp`**: Creative Commons Attribution 4.0 (CC-BY-4.0). Google
-  Research.
+- **MBPP test split, `google-research-datasets/mbpp`**: Creative Commons Attribution 4.0
+  (CC-BY-4.0). Google Research. (Its other splits are training data, above.)
 
 ## Software
 
