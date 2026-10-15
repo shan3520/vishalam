@@ -7,7 +7,7 @@ people actually ask for things.
 ## Where and how
 
 Put them in `handwritten/requests.jsonl`, one JSON object per line (copy the format from
-`TEMPLATE.jsonl`):
+`TEMPLATE.jsonl`, and see `EXAMPLES.md` for a dozen worked examples in different styles):
 
 ```json
 {"id": "h001", "split": "test", "category": "lists", "function_name": "second_smallest", "request": "Write a function `second_smallest(nums)` that returns the second smallest distinct number, or None if there isn't one."}
@@ -17,7 +17,7 @@ Put them in `handwritten/requests.jsonl`, one JSON object per line (copy the for
 |---|---|
 | `id` | `h001`, `h002`, ... never reuse an id |
 | `split` | `test` (about 200, only used for scoring, never trained on) or `seed` (about 100, used as style examples for the rewording step) |
-| `category` | `lists`, `strings` or `math` (M1 scope) |
+| `category` | `lists`, `strings`, `math`, `dicts`, `matrices`, `sorting`, `recursion` or `parsing` |
 | `function_name` | the exact function name, and it **must** appear in the request in backticks |
 | `request` | your wording; say what to return in edge cases (empty input, ties, not found, ...) |
 

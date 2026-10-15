@@ -6,11 +6,15 @@ measures whether the agent generalizes to kinds of tasks it has never practised.
 from __future__ import annotations
 
 from .base import Case, Family, TaskInstance, make_instance  # noqa: F401
+from .dict_tasks import FAMILIES as _DICTS
 from .list_tasks import FAMILIES as _LISTS
 from .math_tasks import FAMILIES as _MATH
+from .matrix_tasks import FAMILIES as _MATRICES
+from .more_list_tasks import FAMILIES as _LISTS2
+from .more_string_tasks import FAMILIES as _STRINGS2
 from .string_tasks import FAMILIES as _STRINGS
 
-ALL: list[Family] = _LISTS + _STRINGS + _MATH
+ALL: list[Family] = _LISTS + _STRINGS + _MATH + _DICTS + _MATRICES + _LISTS2 + _STRINGS2
 BY_ID: dict[str, Family] = {f.id: f for f in ALL}
 assert len(BY_ID) == len(ALL), "duplicate family ids"
 
