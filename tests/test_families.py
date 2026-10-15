@@ -38,3 +38,17 @@ def test_every_param_choice_has_a_safe_option(fam):
 def test_held_out_ids_exist():
     assert HELD_OUT <= set(BY_ID)
     assert 80 <= len(ALL)
+
+
+def test_benchmark_overlap_names_and_clean_rows():
+    from vishalam.eval.harness import training_family_names
+    from vishalam.eval.run import summarize
+
+    names = training_family_names()
+    assert "is_prime" in names and "sum_even" in names  # plain and variant names
+    assert not ({"median", "power_set"} & names)  # held-out families are not training names
+    rec = dict(passed=True, first_try=True, finished=True, n_steps=3, parse_errors=0, kind="create")
+    table = summarize([{**rec, "split": "humaneval", "family_overlap": True},
+                       {**rec, "split": "humaneval", "family_overlap": False, "passed": False}])
+    assert table["humaneval"]["n"] == 2 and table["humaneval (clean)"]["n"] == 1
+    assert table["humaneval (clean)"]["pass"] == 0.0

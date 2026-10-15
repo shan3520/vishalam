@@ -69,6 +69,7 @@ def run_task(agent, task: dict, sandbox) -> dict:
         return {
             "id": task.get("id"), "split": task["split"], "family_id": task.get("family_id"),
             "kind": task.get("kind", "create"), "passed": passed,
+            "family_overlap": task.get("family_overlap", False),
             "first_try": passed and res.test_runs <= 1, "finished": res.finished,
             "test_runs": res.test_runs, "n_steps": len(res.steps), "parse_errors": res.parse_errors,
             "stop_reason": res.stop_reason, "hidden_output": out[-800:],
@@ -79,6 +80,18 @@ def run_task(agent, task: dict, sandbox) -> dict:
 
 
 # ------------------------------------------------------------------ task sets
+
+def training_family_names() -> set[str]:
+    """Lower-cased function names the training families can produce. A benchmark task with one of
+    these names may be (close to) a task the agent practised, so its score is reported separately."""
+    from vishalam.data.agent.families import TRAIN_FAMILIES
+
+    names = set()
+    for fam in TRAIN_FAMILIES:
+        for n in fam.names:
+            names |= {n.format(**v).lower() for v in fam.variants} if "{" in n else {n.lower()}
+    return names
+
 
 def load_generated(path: str | Path) -> list[dict]:
     tasks = []
@@ -116,7 +129,7 @@ def load_handwritten(root: str | Path = "handwritten") -> list[dict]:
 def load_mbpp() -> list[dict]:
     from datasets import load_dataset
 
-    tasks = []
+    tasks, overlap = [], training_family_names()
     for r in load_dataset("google-research-datasets/mbpp", "full", split="test"):
         m = re.search(r"def\s+(\w+)\s*\(", r["code"])
         if not m:
@@ -126,6 +139,7 @@ def load_mbpp() -> list[dict]:
         setup = r.get("test_setup_code") or ""
         code = f"from {{module}} import *\n{setup}\n\n\ndef test_mbpp():\n{body}\n"
         tasks.append({"id": f"mbpp-{r['task_id']}", "split": "mbpp", "fname": name,
+                      "family_overlap": name.lower() in overlap,
                       "request": f"{r['text'].strip()} The function must be called `{name}`.",
                       "hidden_code": code})
     return tasks
@@ -134,11 +148,12 @@ def load_mbpp() -> list[dict]:
 def load_humaneval() -> list[dict]:
     from datasets import load_dataset
 
-    tasks = []
+    tasks, overlap = [], training_family_names()
     for r in load_dataset("openai/openai_humaneval", split="test"):
         ep = r["entry_point"]
         code = f"from {{module}} import *\n\n{r['test']}\n\n\ndef test_humaneval():\n    check({ep})\n"
         tasks.append({"id": r["task_id"], "split": "humaneval", "fname": ep,
+                      "family_overlap": ep.lower() in overlap,
                       "request": f"Write the Python function `{ep}` described below.\n\n{r['prompt']}",
                       "hidden_code": code})
     return tasks

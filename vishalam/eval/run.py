@@ -23,6 +23,9 @@ def summarize(records: list[dict]) -> dict:
     by = defaultdict(list)
     for r in records:
         by[r["split"]].append(r)
+        if r["split"] in ("humaneval", "mbpp") and not r.get("family_overlap"):
+            # benchmark tasks whose function name matches a training family may have been practised
+            by[f"{r['split']} (clean)"].append(r)
     table = {}
     for split, rs in by.items():
         n = len(rs)
@@ -40,9 +43,9 @@ def summarize(records: list[dict]) -> dict:
 
 
 def print_table(table: dict) -> None:
-    print(f"\n{'split':<14}{'n':>6}{'pass (<=3 fixes)':>18}{'first try':>11}{'finished':>10}{'steps':>7}{'parse err':>11}")
+    print(f"\n{'split':<18}{'n':>6}{'pass (<=3 fixes)':>18}{'first try':>11}{'finished':>10}{'steps':>7}{'parse err':>11}")
     for split, t in table.items():
-        print(f"{split:<14}{t['n']:>6}{t['pass']:>17.1%}{t['first_try']:>11.1%}{t['finished']:>10.1%}"
+        print(f"{split:<18}{t['n']:>6}{t['pass']:>17.1%}{t['first_try']:>11.1%}{t['finished']:>10.1%}"
               f"{t['avg_steps']:>7.1f}{t['parse_error_rate']:>11.1%}")
     for split, bar in M1_BAR.items():
         if split in table:
