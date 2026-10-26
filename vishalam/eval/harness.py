@@ -15,6 +15,7 @@ import tempfile
 from pathlib import Path
 
 from vishalam.agent.tools import Workspace
+from vishalam.data.agent.mbpp_episodes import mbpp_request
 from vishalam.data.agent.trajectories import cases_from_json, render_hidden_tests
 
 HIDDEN_FILE = "test_zz_hidden.py"
@@ -140,7 +141,7 @@ def load_mbpp() -> list[dict]:
         code = f"from {{module}} import *\n{setup}\n\n\ndef test_mbpp():\n{body}\n"
         tasks.append({"id": f"mbpp-{r['task_id']}", "split": "mbpp", "fname": name,
                       "family_overlap": name.lower() in overlap,
-                      "request": f"{r['text'].strip()} The function must be called `{name}`.",
+                      "request": mbpp_request(r["text"], name, r["test_list"]),
                       "hidden_code": code})
     return tasks
 

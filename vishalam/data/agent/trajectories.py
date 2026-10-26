@@ -15,9 +15,10 @@ from vishalam.agent.format import Step, ToolCall
 from vishalam.agent.tools import Workspace
 from vishalam.data.agent.families.base import Case, TaskInstance
 from vishalam.data.agent.mutations import fix_edit, mutate
-from vishalam.data.agent.phrasing import fix_request
+from vishalam.data.agent.phrasing import examples_text, fix_request, with_examples
 
 TEST_NAMES = ["test_basic", "test_example", "test_another_case", "test_more"]
+P_EXAMPLES = 0.85  # share of "write" requests that give worked examples ("fix" requests always do)
 
 
 def cases_to_json(cases: list[Case]) -> list[list[str]]:
@@ -61,6 +62,37 @@ def render_tests(fname: str, module: str, cases: list[Case], edge_last: bool = T
     return "\n".join(lines) + "\n"
 
 
+def _type_line(fname: str, c: Case) -> str:
+    call, e = _call_src(fname, c.args), c.expected
+    if e is None:
+        return f"    assert {call} is None"
+    if isinstance(e, bool):
+        return f"    assert isinstance({call}, bool)"
+    if isinstance(e, (int, float)):
+        return f"    assert isinstance({call}, (int, float))"
+    return f"    assert isinstance({call}, {type(e).__name__})"
+
+
+def render_smoke_tests(fname: str, module: str, cases: list[Case]) -> str:
+    """Tests for a request without examples: the function runs and returns the right kind of value.
+    The agent cannot know the exact answers, so it does not invent them."""
+    lines = [f"from {module} import {fname}"]
+    for name, c in zip(["test_runs", "test_another_input", "test_edge_input"], cases):
+        lines += ["", "", f"def {name}():", _type_line(fname, c)]
+    return "\n".join(lines) + "\n"
+
+
+def request_examples(task: TaskInstance, request: str, kind: str, split: str, rng: random.Random,
+                     examples: bool | None = None) -> tuple[str, bool]:
+    """Add the agent cases to the request as worked examples (always for bug reports, else P_EXAMPLES)."""
+    if examples is None:
+        examples = kind == "fix" or rng.random() < P_EXAMPLES
+    if examples:
+        cases = [(c.args, c.expected) for c in task.agent_cases]
+        request = with_examples(request, examples_text(task.fname, cases, split, rng))
+    return request, examples
+
+
 def render_hidden_tests(fname: str, module: str, cases: list[Case]) -> str:
     uses_approx = any(_has_float(c.expected) for c in cases)
     lines = (["import pytest", ""] if uses_approx else []) + [f"from {module} import {fname}"]
@@ -85,13 +117,21 @@ DONE_REPAIR = ["Fixed the bug in `{file}`; all {n} tests pass now.",
 
 
 def synthesize(task: TaskInstance, rng: random.Random, kind: str, sandbox, split: str = "train",
-               p_bug: float = 0.5) -> dict | None:
+               p_bug: float = 0.5, examples: bool | None = None) -> dict | None:
     """Build one episode. Returns None if the random choices do not give a clean episode (e.g. an
-    injected bug that the agent's own tests would not catch); the caller simply tries again."""
+    injected bug that the agent's own tests would not catch); the caller simply tries again.
+    With worked examples in the request the agent's tests check exactly those; without, they only
+    check that the function runs and returns the right kind of value."""
     sol_file = f"{task.module}.py"
     test_file = f"test_{task.module}.py"
-    tests = render_tests(task.fname, task.module, task.agent_cases)
-    n_tests = len(task.agent_cases)
+    if examples is None:
+        examples = kind == "fix" or rng.random() < P_EXAMPLES
+    if examples:
+        tests = render_tests(task.fname, task.module, task.agent_cases)
+        n_tests = len(task.agent_cases)
+    else:
+        tests = render_smoke_tests(task.fname, task.module, task.agent_cases)
+        n_tests = min(3, len(task.agent_cases))
     root = Path(tempfile.mkdtemp(prefix="vish_"))
     try:
         ws = Workspace(root, sandbox)
@@ -116,6 +156,7 @@ def synthesize(task: TaskInstance, rng: random.Random, kind: str, sandbox, split
             request = fix_request(task.description, task.module, split, rng)
             if task.notes:
                 request += " " + task.notes
+            request, _ = request_examples(task, request, kind, split, rng, examples)
             do("list_files")
             do("read_file", path=sol_file)
             do("write_file", path=test_file, content=tests)
@@ -127,6 +168,7 @@ def synthesize(task: TaskInstance, rng: random.Random, kind: str, sandbox, split
                 return None
             message = rng.choice(DONE_REPAIR).format(**fmt)
         else:
+            request, _ = request_examples(task, request, kind, split, rng, examples)
             if rng.random() < 0.4:
                 do("list_files")
             do("write_file", path=test_file, content=tests)
@@ -158,7 +200,7 @@ def synthesize(task: TaskInstance, rng: random.Random, kind: str, sandbox, split
             "kind": kind, "split": split, "family_id": task.family_id, "category": task.category,
             "fname": task.fname, "module": task.module, "request": request,
             "request_source": task.request_source, "description": task.description, "notes": task.notes,
-            "initial_files": initial, "steps": [s.to_dict() for s in steps],
+            "has_examples": examples, "initial_files": initial, "steps": [s.to_dict() for s in steps],
             "ref_source": task.ref_source,
             "agent_cases": cases_to_json(task.agent_cases),
             "hidden_cases": cases_to_json(task.hidden_cases),
@@ -179,10 +221,11 @@ def eval_task(task: TaskInstance, rng: random.Random, kind: str, split: str) -> 
         request = fix_request(task.description, task.module, split, rng)
         if task.notes:
             request += " " + task.notes
+    request, examples = request_examples(task, request, kind, split, rng)
     return {
         "kind": kind, "split": split, "family_id": task.family_id, "category": task.category,
         "fname": task.fname, "module": task.module, "request": request,
-        "request_source": task.request_source, "initial_files": initial,
+        "request_source": task.request_source, "has_examples": examples, "initial_files": initial,
         "hidden_cases": cases_to_json(task.hidden_cases),
         "ref_source": task.ref_source,
     }

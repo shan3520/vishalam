@@ -318,6 +318,21 @@ get_ipython().system(f"{VLLM_PY} -m vishalam.data.agent.reword_qwen --inp {m1}/t
 ]
 
 
+# --- Worked examples in requests (CPU): the reworded episodes get input/output examples (85%; else
+# smoke-test episodes) and new test sets are built the same way; SFT and eval read this kernel's output.
+M1_DATA = "vishalam-m1-examples"
+EXAMPLES_CELLS = [
+    SETUP,
+    '''src = inputs_with("m1/train_mixed.jsonl", "vishalam-reword")[0] + "/m1"
+os.makedirs(f"{WORK}/m1", exist_ok=True)
+get_ipython().system(f"python -m vishalam.data.agent.add_examples --inp {src}/train_mixed.jsonl "
+                     f"--out {WORK}/m1/train_mixed.jsonl --workers 4")
+get_ipython().system(f"python -m vishalam.data.agent.build_m1 --out {WORK}/m1 --tests-only --workers 4")
+shutil.rmtree(f"{WORK}/m1/train_parts", ignore_errors=True)
+''',
+]
+
+
 def sft_cells(size: str) -> list[str]:
     return [
         SETUP, GPU_GUARD, DATA_INPUTS,
@@ -327,7 +342,7 @@ def sft_cells(size: str) -> list[str]:
 mbpp = f"{{WORK}}/mbpp_train.jsonl"
 if not os.path.exists(mbpp):
     get_ipython().system(f"python -m vishalam.data.agent.mbpp_episodes --out {{mbpp}} --repeat 8")
-m1 = inputs_with("m1/train_mixed.jsonl", "vishalam-reword")[0] + "/m1"
+m1 = inputs_with("m1/train_mixed.jsonl", "{M1_DATA}")[0] + "/m1"
 init = inputs_with("run/model.pt", "vishalam-pretrain-{size}-")[0] + "/run/model.pt"
 extra = " ".join(f"--episodes {{d}}/self.jsonl" for d in inputs_with("self.jsonl", "vishalam-eval-m1-{size}"))
 prev = inputs_with("sft/ckpt.pt", "vishalam-sft-m1-{size}-")
@@ -349,7 +364,7 @@ def eval_cells(size: str, expert_iter: bool = False) -> list[str]:
         f'''\
 # --- Evaluate the agent (generated seen/unseen, hand-written, HumanEval, MBPP) ---
 TOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
-m1 = inputs_with("m1/test_seen.jsonl", "vishalam-reword")[0] + "/m1"
+m1 = inputs_with("m1/test_seen.jsonl", "{M1_DATA}")[0] + "/m1"
 MODEL = inputs_with("sft/model.pt", "vishalam-sft-m1-{size}-")[0] + "/sft/model.pt"
 # a session that ran out of time keeps its finished sets; the -b kernel, given that output, runs the rest
 prev = inputs_with("results.json", "vishalam-eval-m1-{size}")
@@ -426,6 +441,7 @@ def main() -> None:
     for part in range(AGENT_PARTS):
         kaggle_kernel(f"vishalam_agent_data_p{part}", f"vishalam agent data p{part}", agentdata_cells(part), gpu=False)
     kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
+    kaggle_kernel("vishalam_m1_examples", "vishalam m1 examples", EXAMPLES_CELLS, gpu=False)
     for size in ["125m", "350m"]:
         for side in "ab":
             kaggle_kernel(f"vishalam_sft_m1_{size}_{side}", f"vishalam sft m1 {size} {side}", sft_cells(size), gpu=True)

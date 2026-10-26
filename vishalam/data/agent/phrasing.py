@@ -31,3 +31,46 @@ def make_wrap(split: str):
 def fix_request(desc: str, module: str, split: str, rng: random.Random) -> str:
     frames = FIX_FRAMES_TRAIN if split == "train" else FIX_FRAMES_TEST
     return rng.choice(frames).format(d=desc, m=module)
+
+
+# ---- worked examples in requests (input -> expected output), the way people usually ask ----
+def _call(fname: str, args) -> str:
+    return f"{fname}({', '.join(repr(a) for a in args)})"
+
+
+def _ex_sentence(calls):
+    parts = [f"`{c}` should return `{e}`" for c, e in calls]
+    return "For example, " + (", and ".join([", ".join(parts[:-1]), parts[-1]]) if len(parts) > 1 else parts[0]) + "."
+
+
+def _ex_arrows(calls):
+    return "Examples:\n" + "\n".join(f"- `{c}` -> `{e}`" for c, e in calls)
+
+
+def _ex_doctest(calls):
+    return "Like this:\n" + "\n".join(f">>> {c}\n{e}" for c, e in calls)
+
+
+def _ex_equals(calls):
+    return "; ".join(f"`{c} == {e}`" for c, e in calls) + "."
+
+
+def _ex_gives(calls):  # held out: test requests only
+    return "Here is how it should work: " + ", ".join(f"`{c}` gives `{e}`" for c, e in calls) + "."
+
+
+TRAIN_EXAMPLE_STYLES = [_ex_sentence, _ex_arrows, _ex_doctest, _ex_equals]
+TEST_EXAMPLE_STYLES = [_ex_gives]
+
+
+def examples_text(fname: str, cases, split: str, rng: random.Random) -> str:
+    """Worked examples for a request; `cases` are (args, expected) pairs. The agent's tests use exactly
+    these, so it never has to invent expected values."""
+    calls = [(_call(fname, args), repr(exp)) for args, exp in cases]
+    styles = TRAIN_EXAMPLE_STYLES if split == "train" else TEST_EXAMPLE_STYLES
+    return rng.choice(styles)(calls)
+
+
+def with_examples(request: str, examples: str) -> str:
+    sep = "\n" if "\n" in examples else " "
+    return request.rstrip() + sep + examples

@@ -15,7 +15,8 @@ def test_record_becomes_a_passing_episode():
     assert ep is not None
     names = [s["call"]["name"] for s in ep["steps"]]
     assert names[-2:] == ["run_tests", "done"] and "write_file" in names
-    assert ep["request"].endswith("The function must be called `max_of_two`.")
+    assert ("The function must be called `max_of_two`.\nYour code should pass these tests:\n"
+            "assert max_of_two(1, 2) == 2") in ep["request"]
     assert " passed" in ep["steps"][-2]["result"]
     [Step.from_dict(s) for s in ep["steps"]]  # loads as SFT steps
 

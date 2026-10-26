@@ -26,6 +26,12 @@ from vishalam.data.agent.trajectories import DONE_OK, _passed
 SPLITS = ("train", "validation", "prompt")  # never "test"
 
 
+def mbpp_request(text: str, fname: str, tests: list[str]) -> str:
+    """MBPP's standard prompt: the task text plus its test asserts (the worked examples)."""
+    return (f"{text.strip()} The function must be called `{fname}`.\nYour code should pass these tests:\n"
+            + "\n".join(tests))
+
+
 def episode_from_record(r: dict, sandbox, rng: random.Random) -> dict | None:
     m = re.search(r"def\s+(\w+)\s*\(", r["code"])
     if not m:
@@ -58,7 +64,7 @@ def episode_from_record(r: dict, sandbox, rng: random.Random) -> dict | None:
         steps.append(Step(ToolCall("done", {"message": message}), None))
         return {"kind": "create", "split": "train", "family_id": "mbpp", "category": "mbpp",
                 "fname": fname, "module": module, "request_source": "mbpp",
-                "request": f"{r['text'].strip()} The function must be called `{fname}`.",
+                "request": mbpp_request(r["text"], fname, r["test_list"]),
                 "initial_files": {}, "steps": [s.to_dict() for s in steps], "ref_source": code,
                 "mbpp_task_id": r["task_id"]}
     finally:

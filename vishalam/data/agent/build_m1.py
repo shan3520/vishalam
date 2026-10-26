@@ -136,6 +136,7 @@ def main() -> None:
     ap.add_argument("--part", default="0/1", help="I/N: build every N-th chunk starting at I")
     ap.add_argument("--resume-from", default=None, help="an interrupted session's output dir (chunks kept)")
     ap.add_argument("--merge", default=None, help="comma list of part output dirs to join into --out")
+    ap.add_argument("--tests-only", action="store_true", help="build only test_seen/test_unseen")
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -153,6 +154,8 @@ def main() -> None:
     chunk_file = lambda i: parts_dir / f"chunk_{i:05d}.jsonl"  # noqa: E731
     mine = [(i, w) for i, w in enumerate(_split_work(args.n_train, args.chunks, args.seed)) if i % nparts == part]
     todo = [(i, w) for i, w in mine if not chunk_file(i).exists()]
+    if args.tests_only:
+        mine, todo = [], []
     want = sum(n for _, (_, n) in mine)
     done = want - sum(n for _, (_, n) in todo)
     print(f"part {part}/{nparts}: {len(mine)} chunks, {len(mine) - len(todo)} already done", flush=True)
@@ -173,7 +176,7 @@ def main() -> None:
                         for t in tasks:
                             f.write(json.dumps(t) + "\n")
                 print(f"{name}: {n} tasks", flush=True)
-    if nparts == 1:  # a single-machine build is its own merge
+    if nparts == 1 and not args.tests_only:  # a single-machine build is its own merge
         merge([out], out)
     print("done")
 

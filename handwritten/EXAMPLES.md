@@ -14,6 +14,9 @@ are easy to read; in the file, each one goes on a single line.
 - **One clear answer per input.** If two people could reasonably return different things, add a
   sentence that settles it.
 - **Plain inputs and outputs**: numbers, strings, lists, tuples, dicts, booleans, None.
+- **Give 1–3 examples in most requests** (input → expected output), e.g. "`count_above_average([1, 2, 3, 10])`
+  should return 1". The agent turns your examples into its tests; without them it can only check that
+  its code runs. Leave them out in roughly 1 request in 6, so we also measure that case.
 
 ## Formal, with the parameter list
 
