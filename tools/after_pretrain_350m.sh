@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Once 350M pretraining has finished (tools/chain350.sh logs "350m pretraining finished"), run the M1
-# agent fine-tuning (ping-pong sft-a/b sessions until it prints "finished"), then the evaluation.
+# Once 350M pretraining has finished (tools/chain350.sh logs "350m pretraining finished") and the M1
+# data kernel ($M1, default vishalam-m1-examples) is COMPLETE, run the M1 agent fine-tuning (ping-pong
+# sft-a/b sessions until it prints "finished"), then the evaluation (tools/eval_chain.sh).
 #   bash tools/after_pretrain_350m.sh >> runs/m1_350m.log 2>&1
 set -u
+M1=${M1:-vishalam-m1-examples}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 stamp() { date '+%m-%d %H:%M'; }
@@ -18,7 +20,9 @@ until grep -q "^350m pretraining finished" runs/chain_350m.log; do sleep 600; do
 # the kernel holding the final weights is the last pretraining session the chain saw COMPLETE
 FINAL=$(grep -oE "^[0-9-]+ [0-9:]+ vishalam-pretrain-350m-[a-z-]+ COMPLETE" runs/chain_350m.log | tail -1 | awk '{print $3}')
 echo "$(stamp) pretraining finished in $FINAL"
-SRC="vishalam-data-1,vishalam-data-2,vishalam-reword,$FINAL"
+until [ "$($D status "$M1" 2>&1 | tail -1)" = COMPLETE ]; do sleep 600; done
+echo "$(stamp) $M1 COMPLETE"
+SRC="vishalam-data-1,vishalam-data-2,$M1,$FINAL"
 
 SIDE=a; EXTRA=""
 for n in 1 2 3 4 5 6; do
@@ -28,7 +32,9 @@ for n in 1 2 3 4 5 6; do
   last=$($D logs "$CUR")
   echo "$last" | grep -E "^step|paused|finished" | tail -3
   if echo "$last" | grep -q "^finished"; then
-    exec bash tools/push_when_free.sh vishalam_eval_m1_350m --sources "vishalam-data-1,vishalam-reword,$CUR"
+    bash tools/push_when_free.sh vishalam_eval_m1_350m --sources "vishalam-data-1,$M1,$CUR"
+    sleep 120
+    M1=$M1 exec bash tools/eval_chain.sh 350m vishalam-eval-m1-350m "$CUR"
   elif echo "$last" | grep -q "^paused at"; then
     EXTRA=",$CUR"; [ "$SIDE" = a ] && SIDE=b || SIDE=a
   elif [ -z "$(echo "$last" | tr -d '[:space:]')" ]; then

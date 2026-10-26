@@ -4,7 +4,7 @@
 # attached, which skips the finished sets (vishalam.eval.run --skip-done).
 #   bash tools/eval_chain.sh 350m vishalam-eval-m1-350m vishalam-sft-m1-350m-a >> runs/m1_350m.log 2>&1
 set -u
-SIZE=$1; CUR=$2; SFT=$3
+SIZE=$1; CUR=$2; SFT=$3; M1=${M1:-vishalam-m1-examples}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 stamp() { date '+%m-%d %H:%M'; }
@@ -19,7 +19,7 @@ for n in 1 2 3 4; do
     echo "$(stamp) evaluation complete in $CUR"; exit 0
   fi
   case "$CUR" in *-b) NEXT=vishalam_eval_m1_$SIZE;; *) NEXT=vishalam_eval_m1_${SIZE}_b;; esac
-  bash tools/push_when_free.sh "$NEXT" --sources "vishalam-data-1,vishalam-reword,$SFT,$CUR"
+  bash tools/push_when_free.sh "$NEXT" --sources "vishalam-data-1,$M1,$SFT,$CUR"
   CUR=${NEXT//_/-}; sleep 120
 done
 echo "$(stamp) evaluation still incomplete after $n sessions - stopped"
