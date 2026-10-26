@@ -64,6 +64,10 @@ def main() -> None:
     ap.add_argument("--sandbox", choices=["auto", "subprocess"], default="auto")
     ap.add_argument("--out", default=None)
     ap.add_argument("--no-grammar", action="store_true", help="free decoding of tool calls (for comparison)")
+    ap.add_argument("--max-hours", type=float, default=None,
+                    help="stop before this much time has passed (results so far are kept)")
+    ap.add_argument("--skip-done", default=None,
+                    help="earlier results.json: keep its records and run only the sets it lacks")
     args = ap.parse_args()
 
     model, cfg, device = load_model(args.weights, args.device)
@@ -78,20 +82,45 @@ def main() -> None:
         "humaneval": load_humaneval,
         "mbpp": load_mbpp,
     }
-    records = []
+    records, complete = [], []
+    if args.skip_done:
+        done = json.loads(Path(args.skip_done).read_text())
+        complete = done.get("complete_sets", [])
+        records = [r for r in done["records"] if r["split"] in complete]
+        print(f"kept {len(records)} records of finished sets {complete} from {args.skip_done}", flush=True)
+    start = time.time()
+
+    def save() -> dict:
+        table = summarize(records) if records else {}
+        if args.out:
+            Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+            Path(args.out).write_text(json.dumps({"weights": args.weights, "table": table, "complete_sets": complete,
+                                                  "records": records}, indent=1))
+        return table
+
+    out_of_time = False
     for name in args.sets.split(","):
+        if name in complete:
+            continue
         tasks = loaders[name]()[: args.limit]
         t0 = time.time()
         for i, task in enumerate(tasks):
+            if args.max_hours is not None and time.time() - start > args.max_hours * 3600:
+                print(f"out of time during {name} after {i}/{len(tasks)} tasks; it is left incomplete", flush=True)
+                out_of_time = True
+                break
             records.append(run_task(agent, task, sandbox))
             if (i + 1) % 20 == 0 or i + 1 == len(tasks):
                 rate = sum(r["passed"] for r in records if r["split"] == task["split"]) / (i + 1)
                 print(f"{name}: {i + 1}/{len(tasks)} pass so far {rate:.1%} ({time.time() - t0:.0f}s)", flush=True)
-    table = summarize(records)
+        if out_of_time:
+            break
+        complete.append(name)
+        save()  # after every set, so a session that runs out of time keeps the finished ones
+    table = save()
     print_table(table)
-    if args.out:
-        Path(args.out).parent.mkdir(parents=True, exist_ok=True)
-        Path(args.out).write_text(json.dumps({"weights": args.weights, "table": table, "records": records}, indent=1))
+    if out_of_time:
+        print(f"incomplete: finished sets {complete}", flush=True)
 
 
 if __name__ == "__main__":

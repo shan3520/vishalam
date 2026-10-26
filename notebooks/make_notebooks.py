@@ -351,9 +351,12 @@ def eval_cells(size: str, expert_iter: bool = False) -> list[str]:
 TOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
 m1 = inputs_with("m1/test_seen.jsonl", "vishalam-reword")[0] + "/m1"
 MODEL = inputs_with("sft/model.pt", "vishalam-sft-m1-{size}-")[0] + "/sft/model.pt"
+# a session that ran out of time keeps its finished sets; the -b kernel, given that output, runs the rest
+prev = inputs_with("results.json", "vishalam-eval-m1-{size}")
+skip = f"--skip-done {{prev[0]}}/results.json" if prev else ""
 get_ipython().system(f"python -m vishalam.eval.run --weights {{MODEL}} --tokenizer {{TOKENIZER}} "
-                     f"--sets test_seen,test_unseen,handwritten,humaneval,mbpp --data {{m1}} "
-                     f"--sandbox subprocess --out {{WORK}}/results.json")
+                     f"--sets test_seen,test_unseen,handwritten,humaneval,mbpp --data {{m1}} {{skip}} "
+                     f"--sandbox subprocess --max-hours {{hours_left() - 0.3:.2f}} --out {{WORK}}/results.json")
 ''',
     ]
     if expert_iter:
@@ -427,6 +430,7 @@ def main() -> None:
         for side in "ab":
             kaggle_kernel(f"vishalam_sft_m1_{size}_{side}", f"vishalam sft m1 {size} {side}", sft_cells(size), gpu=True)
         kaggle_kernel(f"vishalam_eval_m1_{size}", f"vishalam eval m1 {size}", eval_cells(size), gpu=True)
+        kaggle_kernel(f"vishalam_eval_m1_{size}_b", f"vishalam eval m1 {size} b", eval_cells(size), gpu=True)
     print("notebooks written")
 
 
