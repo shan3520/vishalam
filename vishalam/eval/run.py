@@ -53,10 +53,23 @@ def print_table(table: dict) -> None:
             print(f"M1 bar {split}: {table[split]['pass']:.1%} vs {bar:.0%} -> {'MET' if ok else 'not met'}")
 
 
+def merge(paths: list[str], out: str | None) -> None:
+    """Join shard results (--shard runs) into one table; a set counts as complete if every shard finished it."""
+    parts = [json.loads(Path(p).read_text()) for p in paths]
+    records = [r for d in parts for r in d["records"]]
+    complete = [s for s in parts[0].get("complete_sets", []) if all(s in d.get("complete_sets", []) for d in parts)]
+    table = summarize(records)
+    print_table(table)
+    print(f"merged {len(paths)} shard results; complete sets: {complete}", flush=True)
+    if out:
+        Path(out).write_text(json.dumps({"weights": parts[0]["weights"], "table": table, "complete_sets": complete,
+                                         "records": records}, indent=1))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", required=True)
-    ap.add_argument("--tokenizer", required=True)
+    ap.add_argument("--weights", default=None)
+    ap.add_argument("--tokenizer", default=None)
     ap.add_argument("--sets", default="test_seen,test_unseen,handwritten")
     ap.add_argument("--data", default="data/m1")
     ap.add_argument("--limit", type=int, default=None, help="max tasks per set")
@@ -68,7 +81,18 @@ def main() -> None:
                     help="stop before this much time has passed (results so far are kept)")
     ap.add_argument("--skip-done", default=None,
                     help="earlier results.json: keep its records and run only the sets it lacks")
+    ap.add_argument("--shard", default="0/1", help="I/N: run every N-th task of each set, starting at I")
+    ap.add_argument("--threads", type=int, default=None, help="torch CPU threads (1 per shard process is fastest)")
+    ap.add_argument("--merge", default=None, help="comma list of shard results.json files to join into --out")
     args = ap.parse_args()
+    if args.merge:
+        merge(args.merge.split(","), args.out)
+        return
+    if args.threads:
+        import torch
+
+        torch.set_num_threads(args.threads)
+    shard, nshards = (int(x) for x in args.shard.split("/"))
 
     model, cfg, device = load_model(args.weights, args.device)
     tok = load_tokenizer(args.tokenizer)
@@ -102,7 +126,7 @@ def main() -> None:
     for name in args.sets.split(","):
         if name in complete:
             continue
-        tasks = loaders[name]()[: args.limit]
+        tasks = loaders[name]()[: args.limit][shard::nshards]
         t0 = time.time()
         for i, task in enumerate(tasks):
             if args.max_hours is not None and time.time() - start > args.max_hours * 3600:

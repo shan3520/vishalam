@@ -356,6 +356,42 @@ get_ipython().system(f"{{launcher}} -m vishalam.train.sft --config configs/sft-m
     ]
 
 
+EVAL_CPU_KERNELS, EVAL_CPU_WORKERS = 5, 4  # Kaggle runs at most 5 CPU sessions; each has 4 cores
+
+
+def eval_cpu_cells(size: str, k: int) -> list[str]:
+    """Evaluation on Kaggle CPU sessions (no weekly quota, no queue): kernel k of EVAL_CPU_KERNELS runs
+    EVAL_CPU_WORKERS single-thread processes, each on its own shard of every set (agent decoding is one
+    token at a time, so a core per process beats threads); tools/eval_cpu.sh joins the kernels' results."""
+    return [
+        SETUP,
+        f"""\
+# --- Evaluate the agent on CPU: shard {k} of {EVAL_CPU_KERNELS} kernels x {EVAL_CPU_WORKERS} processes ---
+TOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
+m1 = inputs_with("m1/test_seen.jsonl", "{M1_DATA}")[0] + "/m1"
+MODEL = inputs_with("sft/model.pt", "vishalam-sft-m1-{size}-")[0] + "/sft/model.pt"
+subprocess.run([sys.executable, "-c", "from vishalam.eval.harness import load_humaneval, load_mbpp; "
+                "load_humaneval(); load_mbpp()"], check=True)  # download once, not in every process
+n = {EVAL_CPU_KERNELS} * {EVAL_CPU_WORKERS}
+shards = [{k} * {EVAL_CPU_WORKERS} + w for w in range({EVAL_CPU_WORKERS})]
+procs = [subprocess.Popen(
+    f"python -m vishalam.eval.run --weights {{MODEL}} --tokenizer {{TOKENIZER}} --data {{m1}} "
+    f"--sets test_seen,test_unseen,handwritten,humaneval,mbpp --sandbox subprocess --device cpu --threads 1 "
+    f"--shard {{i}}/{{n}} --max-hours {{hours_left() - 0.5:.2f}} --out {{WORK}}/shard_{{i}}.json "
+    f"> {{WORK}}/shard_{{i}}.log 2>&1", shell=True) for i in shards]
+while any(p.poll() is None for p in procs):
+    time.sleep(600)
+    for i in shards:
+        lines = open(f"{{WORK}}/shard_{{i}}.log").read().splitlines()
+        print(f"shard {{i}}:", lines[-1] if lines else "(starting)", flush=True)
+for i in shards:
+    print(open(f"{{WORK}}/shard_{{i}}.log").read()[-1500:])
+done = ",".join(f"{{WORK}}/shard_{{i}}.json" for i in shards if os.path.exists(f"{{WORK}}/shard_{{i}}.json"))
+get_ipython().system(f"python -m vishalam.eval.run --merge {{done}} --out {{WORK}}/results.json")
+""",
+    ]
+
+
 def eval_cells(size: str, expert_iter: bool = False) -> list[str]:
     """Evaluation; optionally one expert-iteration round (off by default: it used ~5 of 12 GPU hours
     and, for the 125M agent, mostly re-collected task families the model already solved)."""
@@ -447,6 +483,9 @@ def main() -> None:
             kaggle_kernel(f"vishalam_sft_m1_{size}_{side}", f"vishalam sft m1 {size} {side}", sft_cells(size), gpu=True)
         kaggle_kernel(f"vishalam_eval_m1_{size}", f"vishalam eval m1 {size}", eval_cells(size), gpu=True)
         kaggle_kernel(f"vishalam_eval_m1_{size}_b", f"vishalam eval m1 {size} b", eval_cells(size), gpu=True)
+        for k in range(EVAL_CPU_KERNELS):
+            kaggle_kernel(f"vishalam_eval_m1_{size}_cpu{k}", f"vishalam eval m1 {size} cpu{k}",
+                          eval_cpu_cells(size, k), gpu=False)
     print("notebooks written")
 
 

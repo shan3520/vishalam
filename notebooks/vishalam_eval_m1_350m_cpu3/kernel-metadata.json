@@ -1,0 +1,17 @@
+{
+ "id": "shantanupradhan3520/vishalam-eval-m1-350m-cpu3",
+ "title": "vishalam eval m1 350m cpu3",
+ "code_file": "notebook.ipynb",
+ "language": "python",
+ "kernel_type": "notebook",
+ "is_private": true,
+ "enable_gpu": false,
+ "enable_tpu": false,
+ "enable_internet": true,
+ "dataset_sources": [
+  "shantanupradhan3520/vishalam-code"
+ ],
+ "competition_sources": [],
+ "kernel_sources": [],
+ "model_sources": []
+}

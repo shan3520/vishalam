@@ -44,3 +44,19 @@ def test_out_of_time_keeps_finished_sets_and_resume_skips_them(monkeypatch, tmp_
     assert calls == ["mbpp"] * 3
     assert second["complete_sets"] == ["humaneval", "mbpp"]
     assert second["table"]["humaneval"]["n"] == 3 and second["table"]["mbpp"]["n"] == 3
+
+
+def test_shards_cover_every_task_once_and_merge(monkeypatch, tmp_path):
+    calls = []
+    _fake(monkeypatch, calls)
+    paths = []
+    for i in range(2):
+        paths.append(str(tmp_path / f"shard_{i}.json"))
+        _main(monkeypatch, "--sets", "humaneval,mbpp", "--shard", f"{i}/2", "--out", paths[-1])
+    assert sorted(calls) == ["humaneval"] * 3 + ["mbpp"] * 3
+    out = tmp_path / "results.json"
+    monkeypatch.setattr(sys, "argv", ["run", "--merge", ",".join(paths), "--out", str(out)])
+    run.main()
+    merged = json.loads(out.read_text())
+    assert merged["complete_sets"] == ["humaneval", "mbpp"]
+    assert merged["table"]["humaneval"]["n"] == 3 and merged["table"]["mbpp"]["n"] == 3
