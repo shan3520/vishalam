@@ -14,6 +14,7 @@ candidates (JSONL), tagged so the README can disclose the AI-generated share.
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import random
 import re
@@ -59,22 +60,24 @@ TASK_PROMPT = """Invent a new, self-contained Python exercise.
 Theme: {topic}. Input: {kind}. Difficulty: {level}.
 Rules: one function; standard library only; deterministic; no input(), printing, files or randomness;
 arguments and the return value are plain Python values (int, float, str, bool, None, list, tuple, dict);
-the request must settle every edge case (empty input, ties, missing values) so there is exactly one
-correct answer. Do not include examples in the request.
+the request must say what type each argument is and exactly what is returned, and settle every edge
+case (empty input, ties, missing values), so there is exactly one correct answer. Do not include
+examples in the request.
 Reply in exactly this format:
 FUNCTION: <snake_case name>
 REQUEST: <1-4 sentences, written as a user asking for it, mentioning the function as `name(arg1, arg2)` in backticks>
 SOLUTION:
 ```python
-<the function>
+<only the function and the imports it needs; no example usage>
 ```
 INPUTS:
 ```python
-[<8 to 12 argument tuples, e.g. ([3, 1, 2],) or ("abc", 2); include edge cases>]
+[<ONE list literal of 8 to 12 tuples, each holding the arguments of one call in order, e.g. ([3, 1, 2],) for a single list argument or ("abc", 2) for two arguments; literal values only (no comments, variables or expressions like [0] * 5); include edge cases>]
 ```"""
 SOLVE_PROMPT = """{request}
 
-Write the Python function `{signature}`. Reply with only one ```python code block."""
+Write the Python function `{signature}`. It is called like this: {calls}
+Reply with only one ```python code block containing the function."""
 
 _BLOCK = re.compile(r"```(?:python)?\n(.*?)```", re.S)
 
@@ -90,6 +93,35 @@ def parse_task(text: str) -> dict | None:
         return None
     return {"fname": m_f.group(1), "request": " ".join(m_r.group(1).split()), "solution": sol[-1].strip() + "\n",
             "inputs_src": inp[0].strip()}
+
+
+def parse_inputs(src: str) -> list:
+    """The INPUTS block as a list of argument tuples (or bare values). Lenient: one list literal, or one
+    literal per line; comments are dropped."""
+    lines = [ln.split("  #")[0].split("# ")[0].rstrip().rstrip(",") for ln in src.splitlines()]
+    try:
+        v = ast.literal_eval("\n".join(lines))
+        if isinstance(v, (list, tuple)):
+            return list(v)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        pass
+    out = []
+    for ln in lines:
+        ln = ln.strip().lstrip("[").rstrip("]") if ln.strip() in ("[", "]") else ln.strip()
+        if ln:
+            try:
+                out.append(ast.literal_eval(ln))
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                pass
+    return out
+
+
+def example_calls(fname: str, inputs: list, k: int = 3) -> str:
+    calls = []
+    for e in inputs[:k]:
+        args = e if isinstance(e, tuple) else (e,)
+        calls.append(f"`{fname}({', '.join(repr(a) for a in args)})`")
+    return ", ".join(calls)
 
 
 def signature(source: str, fname: str) -> str | None:
@@ -129,8 +161,10 @@ def main() -> None:
             for s, o in zip(specs, outs):
                 t = parse_task(o.outputs[0].text)
                 sig = t and signature(t["solution"], t["fname"])
-                if sig:
-                    tasks.append({**s, **t, "signature": sig})
+                inputs = parse_inputs(t["inputs_src"]) if sig else []
+                if len(inputs) >= 6:
+                    tasks.append({**s, **t, "inputs_src": repr(inputs), "signature": sig,
+                                  "calls": example_calls(t["fname"], inputs)})
             outs2 = llm.generate([chat(SOLVE_PROMPT.format(**t)) for t in tasks],
                                  SamplingParams(temperature=0.2, top_p=0.95, max_tokens=600, seed=rng.randrange(1 << 30)))
             for t, o in zip(tasks, outs2):
