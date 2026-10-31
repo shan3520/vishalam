@@ -334,7 +334,7 @@ shutil.rmtree(f"{WORK}/m1/train_parts", ignore_errors=True)
 
 
 # --- Many different tasks written by Qwen2.5-7B (vLLM, one process per T4), then verified on CPU ---
-def gen_tasks_cells(n: int = 40000, hours: str = "hours_left() - 0.6") -> list[str]:
+def gen_tasks_cells(n: int = 100000, hours: str = "hours_left() - 0.6") -> list[str]:
     return [SETUP, GPU_GUARD, GEN_TASKS_CELL.replace("N_TASKS", str(n)).replace("MAX_HOURS", hours)]
 
 
