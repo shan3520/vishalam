@@ -79,6 +79,10 @@ Model sizes (all 4,096-token context, 50,304-token vocabulary):
 - **AI-reworded share:** about 40% of training requests are rewritten by Qwen2.5-7B-Instruct
   (Apache-2.0) for more natural English. Each rewrite is validated and tagged `ai-reworded`.
   *Exact share: TBD after the rewording run.*
+- **AI-generated tasks:** tens of thousands of distinct tasks written by Qwen2.5-7B-Instruct, each
+  kept only if two independently written solutions agree on every test input in a sandbox, and
+  filtered against HumanEval/MBPP-test and the held-out families. Tagged `ai-generated`; template
+  families are capped at 100 episodes each so they no longer dominate.
 - **Hand-written:** 300+ requests written by the author. The test half is never trained on.
 - **Self-generated:** episodes where the agent solved fresh tasks itself, verified by hidden tests.
 

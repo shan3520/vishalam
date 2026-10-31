@@ -27,8 +27,12 @@ pretraining tokens.
 
 ## Models used during data creation
 
-**Qwen2.5-7B-Instruct (AWQ build), `Qwen/Qwen2.5-7B-Instruct-AWQ`**: used only to reword a disclosed
-share of training requests. It is not part of the Vishalam model.
+**Qwen2.5-7B-Instruct (AWQ build), `Qwen/Qwen2.5-7B-Instruct-AWQ`**: used during data creation to
+(1) reword a disclosed share of training requests and (2) write candidate programming tasks with
+reference solutions (`vishalam/data/agent/gen_tasks.py`); a candidate is kept only if an independent
+second solution agrees with the reference on every test input when run in a sandbox. Generated
+episodes are tagged `ai-generated`. Qwen is not part of the Vishalam model and no Qwen weights are
+used or distilled; only verified task text and code enter the fine-tuning data.
 - License: Apache License 2.0. Copyright Alibaba Cloud / Qwen team.
 
 ## Evaluation benchmarks (never trained on; overlap removed from training data)
