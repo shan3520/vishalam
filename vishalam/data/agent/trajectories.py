@@ -117,11 +117,13 @@ DONE_REPAIR = ["Fixed the bug in `{file}`; all {n} tests pass now.",
 
 
 def synthesize(task: TaskInstance, rng: random.Random, kind: str, sandbox, split: str = "train",
-               p_bug: float = 0.5, examples: bool | None = None) -> dict | None:
+               p_bug: float = 0.5, examples: bool | None = None, wrong_first: str | None = None) -> dict | None:
     """Build one episode. Returns None if the random choices do not give a clean episode (e.g. an
     injected bug that the agent's own tests would not catch); the caller simply tries again.
     With worked examples in the request the agent's tests check exactly those; without, they only
-    check that the function runs and returns the right kind of value."""
+    check that the function runs and returns the right kind of value. `wrong_first` ("write" episodes):
+    the first attempt is that code (a wrong approach); after the failing tests the agent rewrites the
+    whole file instead of patching a line."""
     sol_file = f"{task.module}.py"
     test_file = f"test_{task.module}.py"
     if examples is None:
@@ -172,6 +174,17 @@ def synthesize(task: TaskInstance, rng: random.Random, kind: str, sandbox, split
             if rng.random() < 0.4:
                 do("list_files")
             do("write_file", path=test_file, content=tests)
+            if wrong_first is not None:  # a wrong approach first: tests fail, the agent rewrites the file
+                do("write_file", path=sol_file, content=wrong_first)
+                if _passed(do("run_tests")):
+                    return None
+                if rng.random() < 0.3:
+                    do("read_file", path=test_file)
+                do("write_file", path=sol_file, content=task.ref_source)
+                if not _passed(do("run_tests")):
+                    return None
+                steps.append(Step(ToolCall("done", {"message": rng.choice(DONE_FIXED).format(**fmt)}), None))
+                return _record(task, kind, split, request, examples, initial, steps, root, sol_file)
             buggy = mutate(task.ref_source, rng) if rng.random() < p_bug else None
             do("write_file", path=sol_file, content=buggy or task.ref_source)
             if rng.random() < 0.1:
@@ -193,20 +206,24 @@ def synthesize(task: TaskInstance, rng: random.Random, kind: str, sandbox, split
                     return None
                 message = rng.choice(DONE_OK).format(**fmt)
         steps.append(Step(ToolCall("done", {"message": message}), None))
-
-        final = (root / sol_file).read_text(encoding="utf-8")
-        assert final == task.ref_source, "episode must end with the reference solution"
-        return {
-            "kind": kind, "split": split, "family_id": task.family_id, "category": task.category,
-            "fname": task.fname, "module": task.module, "request": request,
-            "request_source": task.request_source, "description": task.description, "notes": task.notes,
-            "has_examples": examples, "initial_files": initial, "steps": [s.to_dict() for s in steps],
-            "ref_source": task.ref_source,
-            "agent_cases": cases_to_json(task.agent_cases),
-            "hidden_cases": cases_to_json(task.hidden_cases),
-        }
+        return _record(task, kind, split, request, examples, initial, steps, root, sol_file)
     finally:
         shutil.rmtree(root, ignore_errors=True)
+
+
+def _record(task: TaskInstance, kind: str, split: str, request: str, examples: bool, initial: dict,
+            steps: list[Step], root: Path, sol_file: str) -> dict:
+    final = (root / sol_file).read_text(encoding="utf-8")
+    assert final == task.ref_source, "episode must end with the reference solution"
+    return {
+        "kind": kind, "split": split, "family_id": task.family_id, "category": task.category,
+        "fname": task.fname, "module": task.module, "request": request,
+        "request_source": task.request_source, "description": task.description, "notes": task.notes,
+        "has_examples": examples, "initial_files": initial, "steps": [s.to_dict() for s in steps],
+        "ref_source": task.ref_source,
+        "agent_cases": cases_to_json(task.agent_cases),
+        "hidden_cases": cases_to_json(task.hidden_cases),
+    }
 
 
 def eval_task(task: TaskInstance, rng: random.Random, kind: str, split: str) -> dict | None:

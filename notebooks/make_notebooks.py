@@ -320,7 +320,7 @@ get_ipython().system(f"{VLLM_PY} -m vishalam.data.agent.reword_qwen --inp {m1}/t
 
 # --- Worked examples in requests (CPU): the reworded episodes get input/output examples (85%; else
 # smoke-test episodes) and new test sets are built the same way; SFT and eval read this kernel's output.
-M1_DATA = "vishalam-m1-examples"
+M1_DATA = "vishalam-gen-episodes"  # generated tasks + capped family episodes (was vishalam-m1-examples)
 EXAMPLES_CELLS = [
     SETUP,
     '''src = inputs_with("m1/train_mixed.jsonl", "vishalam-reword")[0] + "/m1"
@@ -329,6 +329,43 @@ get_ipython().system(f"python -m vishalam.data.agent.add_examples --inp {src}/tr
                      f"--out {WORK}/m1/train_mixed.jsonl --workers 4")
 get_ipython().system(f"python -m vishalam.data.agent.build_m1 --out {WORK}/m1 --tests-only --workers 4")
 shutil.rmtree(f"{WORK}/m1/train_parts", ignore_errors=True)
+''',
+]
+
+
+# --- Many different tasks written by Qwen2.5-7B (vLLM, one process per T4), then verified on CPU ---
+def gen_tasks_cells(n: int = 40000, hours: str = "hours_left() - 0.6") -> list[str]:
+    return [SETUP, GPU_GUARD, GEN_TASKS_CELL.replace("N_TASKS", str(n)).replace("MAX_HOURS", hours)]
+
+
+GEN_TASKS_CELL = '''\
+get_ipython().system("pip install -q uv && uv python install 3.11 && uv venv -q -p 3.11 /tmp/vllm_env "
+                     "&& uv pip install -q -p /tmp/vllm_env/bin/python vllm==0.6.6.post1 transformers==4.46.3 setuptools")
+VLLM_PY = "/tmp/vllm_env/bin/python"
+import torch
+os.makedirs(f"{WORK}/gen", exist_ok=True)
+procs = [subprocess.Popen(f"CUDA_VISIBLE_DEVICES={g} {VLLM_PY} -m vishalam.data.agent.gen_tasks "
+                          f"--out {WORK}/gen/cand_{g}.jsonl --n N_TASKS --seed {100 + g} "
+                          f"--max-hours {MAX_HOURS:.2f} > {WORK}/gen/log_{g}.txt 2>&1", shell=True)
+         for g in range(torch.cuda.device_count())]
+while any(p.poll() is None for p in procs):
+    time.sleep(900)
+    for g in range(len(procs)):
+        lines = [l for l in open(f"{WORK}/gen/log_{g}.txt").read().splitlines() if l.startswith("candidates")]
+        print(f"gpu {g}:", lines[-1] if lines else "(loading)", flush=True)
+for g in range(len(procs)):
+    print(open(f"{WORK}/gen/log_{g}.txt").read()[-2000:])
+'''
+GEN_EPISODES_CELLS = [
+    SETUP,
+    '''\
+cands = ",".join(sorted(glob.glob(f"{INPUT}/**/gen/cand_*.jsonl", recursive=True)))
+fams = inputs_with("m1/train_mixed.jsonl", "vishalam-m1-examples")[0] + "/m1"
+os.makedirs(f"{WORK}/m1", exist_ok=True)
+get_ipython().system(f"python -m vishalam.data.agent.gen_episodes --cands {cands} --families {fams}/train_mixed.jsonl "
+                     f"--out {WORK}/m1/train_mixed.jsonl --workers 4")
+for f in ["test_seen.jsonl", "test_unseen.jsonl"]:
+    shutil.copy(f"{fams}/{f}", f"{WORK}/m1/{f}")
 ''',
 ]
 
@@ -478,6 +515,9 @@ def main() -> None:
         kaggle_kernel(f"vishalam_agent_data_p{part}", f"vishalam agent data p{part}", agentdata_cells(part), gpu=False)
     kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
     kaggle_kernel("vishalam_m1_examples", "vishalam m1 examples", EXAMPLES_CELLS, gpu=False)
+    kaggle_kernel("vishalam_gen_tasks", "vishalam gen tasks", gen_tasks_cells(), gpu=True)
+    kaggle_kernel("vishalam_gen_smoke", "vishalam gen smoke", gen_tasks_cells(75, "0.5"), gpu=True)
+    kaggle_kernel("vishalam_gen_episodes", "vishalam gen episodes", GEN_EPISODES_CELLS, gpu=False)
     for size in ["125m", "350m"]:
         for side in "ab":
             kaggle_kernel(f"vishalam_sft_m1_{size}_{side}", f"vishalam sft m1 {size} {side}", sft_cells(size), gpu=True)
