@@ -334,8 +334,9 @@ shutil.rmtree(f"{WORK}/m1/train_parts", ignore_errors=True)
 
 
 # --- Many different tasks written by Qwen2.5-7B (vLLM, one process per T4), then verified on CPU ---
-def gen_tasks_cells(n: int = 100000, hours: str = "hours_left() - 0.6") -> list[str]:
-    return [SETUP, GPU_GUARD, GEN_TASKS_CELL.replace("N_TASKS", str(n)).replace("MAX_HOURS", hours)]
+def gen_tasks_cells(n: int = 100000, hours: str = "hours_left() - 0.6", seed: int = 100) -> list[str]:
+    return [SETUP, GPU_GUARD, GEN_TASKS_CELL.replace("N_TASKS", str(n)).replace("MAX_HOURS", hours)
+            .replace("SEED_BASE", str(seed))]
 
 
 GEN_TASKS_CELL = '''\
@@ -345,7 +346,7 @@ VLLM_PY = "/tmp/vllm_env/bin/python"
 import torch
 os.makedirs(f"{WORK}/gen", exist_ok=True)
 procs = [subprocess.Popen(f"CUDA_VISIBLE_DEVICES={g} {VLLM_PY} -m vishalam.data.agent.gen_tasks "
-                          f"--out {WORK}/gen/cand_{g}.jsonl --n N_TASKS --seed {100 + g} "
+                          f"--out {WORK}/gen/cand_{g}.jsonl --n N_TASKS --seed {SEED_BASE + g} "
                           f"--max-hours {MAX_HOURS:.2f} > {WORK}/gen/log_{g}.txt 2>&1", shell=True)
          for g in range(torch.cuda.device_count())]
 while any(p.poll() is None for p in procs):
@@ -516,6 +517,7 @@ def main() -> None:
     kaggle_kernel("vishalam_reword", "vishalam reword", REWORD_CELLS, gpu=True)
     kaggle_kernel("vishalam_m1_examples", "vishalam m1 examples", EXAMPLES_CELLS, gpu=False)
     kaggle_kernel("vishalam_gen_tasks", "vishalam gen tasks", gen_tasks_cells(), gpu=True)
+    kaggle_kernel("vishalam_gen_tasks_2", "vishalam gen tasks 2", gen_tasks_cells(seed=200), gpu=True)
     kaggle_kernel("vishalam_gen_smoke", "vishalam gen smoke", gen_tasks_cells(75, "0.5"), gpu=True)
     kaggle_kernel("vishalam_gen_episodes", "vishalam gen episodes", GEN_EPISODES_CELLS, gpu=False)
     for size in ["125m", "350m"]:

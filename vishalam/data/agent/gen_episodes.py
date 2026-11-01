@@ -13,7 +13,7 @@ A candidate becomes a task only if, run in the sandbox:
 and it passes decontamination: no name or 8-word phrase shared with HumanEval / MBPP-test prompts, and
 nothing resembling a held-out family (names and concept keywords), so test_unseen stays unseen.
 Each task gives a "write" episode (12% start with a wrong approach - another task's code - and
-rewrite the file), and 30% also a "fix" episode. Family episodes are capped per family so the
+rewrite the file), and 30% also a "fix" episode. Family episodes are capped per family (default 40) so the
 templates no longer dominate.
 """
 from __future__ import annotations
@@ -272,7 +272,8 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--cands", required=True, help="comma list of gen_tasks outputs")
     ap.add_argument("--families", required=True, help="template-family episodes (train_mixed.jsonl)")
-    ap.add_argument("--per-family", type=int, default=100)
+    ap.add_argument("--per-family", type=int, default=40)
+    ap.add_argument("--per-name", type=int, default=40, help="tasks sharing a function name (names follow the theme)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--seed", type=int, default=11)
@@ -295,7 +296,7 @@ def main() -> None:
             stats["dropped: benchmark phrase"] += 1
             continue
         key = " ".join(re.findall(r"[a-z0-9]+", c["request"].lower()))
-        if key in seen_req or per_name[c["fname"]] >= 3:
+        if key in seen_req or per_name[c["fname"]] >= args.per_name:
             stats["dropped: duplicate"] += 1
             continue
         seen_req.add(key)
