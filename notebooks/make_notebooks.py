@@ -430,14 +430,14 @@ get_ipython().system(f"python -m vishalam.eval.run --merge {{done}} --out {{WORK
     ]
 
 
-def eval_base_cells(size: str) -> list[str]:
+def eval_base_cells(size: str, extra: str = "") -> list[str]:
     """The pretrained model alone on HumanEval (no agent or repair), on one Kaggle CPU session."""
     return [
         SETUP,
         f"""\nTOKENIZER = inputs_with("tokenizer.json", "vishalam-data-1")[0] + "/tokenizer.json"
 MODEL = inputs_with("run/model.pt", "vishalam-pretrain-{size}-")[0] + "/run/model.pt"
 get_ipython().system(f"python -m vishalam.eval.base_completion --weights {{MODEL}} --tokenizer {{TOKENIZER}} "
-                     f"--out {{WORK}}/base_results.json --workers 4")
+                     f"--out {{WORK}}/base_results.json --workers 4 {extra}")
 """,
     ]
 
@@ -538,6 +538,8 @@ def main() -> None:
         kaggle_kernel(f"vishalam_eval_m1_{size}", f"vishalam eval m1 {size}", eval_cells(size), gpu=True)
         kaggle_kernel(f"vishalam_eval_m1_{size}_b", f"vishalam eval m1 {size} b", eval_cells(size), gpu=True)
         kaggle_kernel(f"vishalam_eval_base_{size}", f"vishalam eval base {size}", eval_base_cells(size), gpu=False)
+        kaggle_kernel(f"vishalam_eval_base_{size}_k10", f"vishalam eval base {size} k10",
+                      eval_base_cells(size, "--samples 10 --temperature 0.8"), gpu=False)
         for k in range(EVAL_CPU_KERNELS):
             kaggle_kernel(f"vishalam_eval_m1_{size}_cpu{k}", f"vishalam eval m1 {size} cpu{k}",
                           eval_cpu_cells(size, k), gpu=False)

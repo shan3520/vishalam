@@ -26,7 +26,7 @@ def test_score_passes_only_correct_completions():
 
 def test_complete_runs_with_a_small_model():
     torch.manual_seed(0)
-    cfg = ModelConfig(vocab_size=512, d_model=32, n_layers=1, n_heads=2, ffn_dim=64, max_seq_len=64)
+    cfg = ModelConfig(vocab_size=384, d_model=32, n_layers=1, n_heads=2, ffn_dim=64, max_seq_len=64)
     model = Vishalam(cfg).eval()
     tok = Tokenizer([])
     text = complete(model, cfg, "cpu", tok, "def f():\n", max_new=8, chunk=3)
@@ -34,7 +34,21 @@ def test_complete_runs_with_a_small_model():
 
 
 def test_summary_reports_clean_tasks_separately():
-    rows = [{"passed": True, "family_overlap": True}, {"passed": False, "family_overlap": False},
-            {"passed": True, "family_overlap": False}, {"passed": False, "family_overlap": False}]
-    t = summarize(rows)
+    rows = [{"first_pass": 1, "family_overlap": True}, {"first_pass": None, "family_overlap": False},
+            {"first_pass": 1, "family_overlap": False}, {"first_pass": 3, "family_overlap": False}]
+    t = summarize(rows, (1, 5))
     assert t["n"] == 4 and t["pass_at_1"] == 0.5 and t["n_clean"] == 3 and abs(t["pass_at_1_clean"] - 1 / 3) < 1e-9
+    assert t["pass_at_5"] == 0.75 and abs(t["pass_at_5_clean"] - 2 / 3) < 1e-9
+
+
+def test_sampled_attempts_are_reproducible_and_differ_from_each_other():
+    torch.manual_seed(0)
+    cfg = ModelConfig(vocab_size=384, d_model=32, n_layers=1, n_heads=2, ffn_dim=64, max_seq_len=64)
+    model = Vishalam(cfg).eval()
+    tok = Tokenizer([])
+
+    def run(seed):
+        return complete(model, cfg, "cpu", tok, "def f():", max_new=12, chunk=4, temperature=1.0,
+                        generator=torch.Generator().manual_seed(seed))
+
+    assert run(1) == run(1) and len({run(i) for i in range(5)}) > 1
