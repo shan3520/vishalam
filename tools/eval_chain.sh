@@ -4,7 +4,7 @@
 # attached, which skips the finished sets (vishalam.eval.run --skip-done).
 #   bash tools/eval_chain.sh 350m vishalam-eval-m1-350m vishalam-sft-m1-350m-a >> runs/m1_350m.log 2>&1
 set -u
-SIZE=$1; CUR=$2; SFT=$3; M1=${M1:-vishalam-m1-examples}
+SIZE=$1; CUR=$2; SFT=$3; M1=${M1:-vishalam-gen-episodes}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 stamp() { date '+%m-%d %H:%M'; }

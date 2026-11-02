@@ -28,4 +28,5 @@ dir=runs/gen_episodes; rm -rf "$dir"; mkdir -p "$dir"
 cat "$dir/m1/gen_stats.json"
 tasks=$($PY -c "import json; print(json.load(open('$dir/m1/gen_stats.json'))['tasks'])")
 if [ "$tasks" -lt "$MIN_TASKS" ]; then echo "$(stamp) only $tasks tasks (< $MIN_TASKS) - stopped before SFT"; exit 1; fi
-M1=vishalam-gen-episodes exec bash tools/after_pretrain_350m.sh
+export M1=vishalam-gen-episodes
+exec bash tools/after_pretrain_350m.sh

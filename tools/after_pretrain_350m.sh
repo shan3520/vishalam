@@ -4,7 +4,7 @@
 # sft-a/b sessions until it prints "finished"), then the evaluation (tools/eval_cpu.sh).
 #   bash tools/after_pretrain_350m.sh >> runs/m1_350m.log 2>&1
 set -u
-M1=${M1:-vishalam-m1-examples}
+export M1=${M1:-vishalam-gen-episodes}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 stamp() { date '+%m-%d %H:%M'; }
@@ -32,7 +32,7 @@ for n in 1 2 3 4 5 6; do
   last=$($D logs "$CUR")
   echo "$last" | grep -E "^step|paused|finished" | tail -3
   if echo "$last" | grep -q "^finished"; then
-    M1=$M1 exec bash tools/eval_cpu.sh 350m "$CUR"  # Kaggle CPU sessions: no GPU quota needed
+    exec bash tools/eval_cpu.sh 350m "$CUR"  # Kaggle CPU sessions: no GPU quota needed
   elif echo "$last" | grep -q "^paused at"; then
     EXTRA=",$CUR"; [ "$SIDE" = a ] && SIDE=b || SIDE=a
   elif [ -z "$(echo "$last" | tr -d '[:space:]')" ]; then

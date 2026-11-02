@@ -3,7 +3,7 @@
 # their results.json and join them into results/m1-<size>.json.
 #   bash tools/eval_cpu.sh 350m vishalam-sft-m1-350m-a >> runs/m1_350m.log 2>&1
 set -u
-SIZE=$1; SFT=$2; M1=${M1:-vishalam-m1-examples}; K=5; KUSER=${KUSER:-shantanupradhan3520}
+SIZE=$1; SFT=$2; M1=${M1:-vishalam-gen-episodes}; K=5; KUSER=${KUSER:-shantanupradhan3520}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 stamp() { date '+%m-%d %H:%M'; }
@@ -27,5 +27,6 @@ for k in $(seq 0 $((K - 1))); do
   done
   [ -f "$dir/results.json" ] && parts="$parts,$dir/results.json" || echo "$(stamp) $slug: no results.json"
 done
+[ -n "$parts" ] || { echo "$(stamp) no shard results - stopped"; exit 1; }
 mkdir -p results
 $PY -m vishalam.eval.run --merge "${parts#,}" --out "results/m1-$SIZE.json"
