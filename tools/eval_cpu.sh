@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Evaluate on Kaggle CPU sessions (no weekly quota): push the 5 shard kernels, wait for them, download
 # their results.json and join them into results/m1-<size>.json.
-#   bash tools/eval_cpu.sh 350m vishalam-sft-m1-350m-a >> runs/m1_350m.log 2>&1
+#   /usr/bin/bash tools/eval_cpu.sh 350m vishalam-sft-m1-350m-a >> runs/m1_350m.log 2>&1
 set -u
 SIZE=$1; SFT=$2; M1=${M1:-vishalam-gen-episodes}; K=5; KUSER=${KUSER:-shantanupradhan3520}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 stamp() { date '+%m-%d %H:%M'; }
 for k in $(seq 0 $((K - 1))); do
-  bash tools/push_when_free.sh "vishalam_eval_m1_${SIZE}_cpu$k" --sources "vishalam-data-1,$M1,$SFT"
+  /usr/bin/bash tools/push_when_free.sh "vishalam_eval_m1_${SIZE}_cpu$k" --sources "vishalam-data-1,$M1,$SFT"
 done
 sleep 300
 parts=""
