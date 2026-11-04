@@ -2,60 +2,119 @@
 
 **Vishalam is a small coding-agent language model built from scratch**: my own tokenizer, my own
 transformer, my own training code, my own agent dataset, and a local web app where the agent writes
-tests, writes code, runs the tests in a sandbox and fixes its own mistakes.
+tests, writes code, runs the tests in a sandbox and tries to fix its own mistakes.
 
-> Status: **Milestone 1 in progress.** The code pipeline is complete and tested end to end on a tiny
-> model. Pretraining runs on free Kaggle/Colab GPUs have not started yet, so there are no scores yet.
+> **Status: paused after Milestone 1, which is only partly met.** The 350M model is fully trained
+> (10B tokens, free Kaggle hardware only). The agent passes **88%** of new tasks from the task families
+> it trained on, but only **3.7%** from families it never saw, so it is **not** a general coding
+> assistant. The hand-written-request target was never measured. M2 and M3 were not started.
 
 ## What it does
 
-You type a request such as *"Write a function `second_largest(nums)` that returns the second largest
-distinct number, or None if there isn't one."* The agent then:
+You type a request such as *"Write a function `count_vowels(text)` that returns how many vowels are in the
+string `text`, ignoring case. For example, `count_vowels('Hello')` should return `2`."* The agent then:
 
-1. writes its own tests (`write_file test_second_largest.py`)
+1. writes tests based on your examples (`write_file test_count_vowels.py`)
 2. writes the implementation
 3. runs the tests in a sandbox (`run_tests`) and reads the real pytest output
 4. if something fails, reads the error and edits the code (`edit_file`, exact find-and-replace)
 5. reruns the tests and finishes with a short summary (`done`)
 
 Tools: `list_files`, `read_file`, `write_file`, `edit_file`, `search`, `run_tests`, `run_python`, `done`.
+Tool calls use constrained decoding, so they follow the protocol's grammar.
 
-## Honest scope
+## Results
 
-- **Milestone 1** (this one): single Python functions over lists, strings and math, including
-  "fix the bug in this file" tasks.
-- **M2** adds dicts and multi-function files. **M3** adds classes and multi-file projects. Each
-  milestone ships its own model, app and scores.
-- A ~360M-parameter model trained on free GPUs is **not** a general coding assistant. It is a narrow
-  specialist, and it is evaluated honestly, including on public benchmarks where it is expected to
-  score low.
+All numbers come from `results/summary.json`. "Pass" means the code passes hidden tests within up to
+3 fixes. Generated tasks are new instances with request wording held out from training.
+
+| Agent | Seen families (500) | Unseen families (300) | HumanEval (164) | MBPP (500) |
+|---|---|---|---|---|
+| 125M, requests without examples | 79.2% | 4.0% | 1.2% | 2.2% |
+| 350M, requests without examples | 47.8% | 3.7% | 4.9% | 3.6% |
+| **350M, requests with examples (best, in `weights/`)** | **88.0%** | **3.7%** | **10.4%** | **8.4%** |
+| 350M, 7,024 AI-generated tasks | 53.8% | 7.0% | 7.3% | 9.2% |
+
+Rows are not all like for like. The test tasks changed when examples were added to requests, and the
+first two rows ran MBPP without its test lines in the prompt (the standard format, used in the lower two).
+Benchmark scores on tasks whose function name matches no training family ("clean") are in the summary
+file: for the best agent, HumanEval 8.1% and MBPP 7.3%.
+
+**Milestone 1 targets:** at least 70% on seen families (**met**, 88.0%) and at least 40% on hand-written
+requests (**not measured**: the requests were not written, so M1 is not complete).
+
+### What the experiments showed
+
+- **Worked examples fixed self-sabotage.** Without examples the agent invented wrong expected values
+  for its tests, then "fixed" correct code to match them. On seen families the best agent passes 92.9%
+  of requests with examples, against 68.6% without.
+- **New kinds of tasks remain the failure.** On unseen families it mostly writes the solution of the
+  closest family it memorised, and its one-token repairs rarely help.
+- **7,024 generated tasks did not make a better model.** Against the best agent, on the same 1,464 tasks:
+  seen families 9 gained / 180 lost, unseen 14 / 4 (weak evidence: 5 of its 6 new "write" passes are one
+  family), HumanEval 2 / 7, MBPP 27 / 23. Several things changed at once and about 3 of 14 sampled tasks
+  had wrong solutions, so this does not prove that diverse data cannot help.
+- **The base model is the limit.** The pretrained 350M alone, with one greedy attempt and no agent,
+  passes **9.8%** of HumanEval (16/164). So the fine-tuning does not lose ability, but adds little.
+- **Retrying does not rescue it.** Up to 10 sampled attempts (temperature 0.8) reach at most **14.0%**
+  (11.4% clean), even when the hidden tests choose the winner. Lower temperatures were not tried.
+
+## Using the trained model
+
+The weights are stored with [Git LFS](https://git-lfs.com). Install it before cloning; without it you
+get a small pointer file instead of the model. `weights/vishalam-350m-agent.pt` is about 823 MB.
+
+```bash
+git lfs install
+git clone https://github.com/shan3520/vishalam.git
+cd vishalam
+python -m venv .venv
+.venv\Scripts\pip install torch --index-url https://download.pytorch.org/whl/cu126
+.venv\Scripts\pip install -r requirements.txt
+.venv\Scripts\python -m app.server
+```
+
+Then open http://127.0.0.1:8765. Loading takes 1-2 minutes on a laptop, and small tasks then took 20-50
+seconds. `python -m app.server --demo` runs the UI with a scripted agent and no model.
+
+Requests work best as a single Python function with one or more worked examples.
+
+Do not use int8 quantization: it makes the 350M much faster but broke the agent when tried
+(`quantize_cpu=True` in `vishalam/infer/generate.py` is off by default for that reason).
+
+The app uses a Docker sandbox when Docker is running and the image is built
+(`docker build -t vishalam-sandbox sandbox/`). Otherwise it falls back to a plain subprocess with a
+timeout, which does **not** isolate the code; the header shows which one is in use. Use Docker for anything
+you would not run yourself.
+
+Tests: `.venv\Scripts\python -m pytest` (fast) and `-m slow` (end-to-end agent).
 
 ## Built from scratch vs. libraries
 
 | From scratch (this repo) | Libraries used |
 |---|---|
-| Byte-level BPE tokenizer: trainer + encoder, 50k vocab (`vishalam/tokenizer`) | PyTorch (tensors, autograd, SDPA attention kernel) |
+| Byte-level BPE tokenizer: trainer + encoder, 50k vocab (`vishalam/tokenizer`) | PyTorch (tensors, autograd, SDPA attention kernel), PyTorch/XLA |
 | Llama-style transformer: RMSNorm, RoPE, SwiGLU, KV cache (`vishalam/model`) | Hugging Face `datasets` / `huggingface_hub` (download/upload only) |
-| Pretraining + SFT loops: fp16, DDP, resumable across Kaggle/Colab (`vishalam/train`) | FastAPI / uvicorn (web server) |
-| Agent protocol, tools, sandbox, runtime (`vishalam/agent`) | pytest (runs the tests) |
-| 96 hand-written task families, bug injector, episode synthesizer (`vishalam/data/agent`) | vLLM + Qwen2.5-7B (only for rewording some requests; disclosed) |
-| Evaluation harness, self-improvement loop, web UI | |
+| Pretraining + SFT loops: Muon + AdamW, fp16/bf16, DDP, TPU SPMD, resumable sessions (`vishalam/train`) | FastAPI / uvicorn (web server) |
+| Agent protocol, constrained decoding, tools, sandbox, runtime (`vishalam/agent`) | pytest (runs the tests) |
+| 250 hand-written task families, bug injector, episode synthesizer (`vishalam/data/agent`) | vLLM + Qwen2.5-7B (data creation only; disclosed) |
+| Evaluation harness, web UI | |
 
 ## Architecture
 
 ```
  the-stack-dedup (Python, MIT/Apache/BSD only) ─┐
- FineWeb-Edu (English, ODC-BY) ────────────────┼─> filter + decontaminate ─> own BPE ─> token shards (HF, private)
+ FineWeb-Edu (English, ODC-BY) ────────────────┼─> filter + decontaminate ─> own BPE ─> token shards
                                                │
-                                               └─> pretraining  30M pilot -> 125M -> 350M   (Kaggle 2xT4 + Colab)
+                                               └─> pretraining  30M pilot -> 125M -> 350M   (Kaggle 2xT4 + TPU)
                                                                                    │
- 96 task families ─> tasks + injected bugs ─> episodes with REAL tool output ──────┤
- Qwen2.5-7B rewording (40%, tagged) ───────────┘                                    ▼
- hand-written seed requests (style) ──────────────────────────────> agent SFT ─> self-improvement rounds
+ 211 task families ─> tasks + injected bugs ─> episodes with REAL tool output ─────┤
+ Qwen2.5-7B rewording (about 34% of requests, tagged) ─┘                           │
+ worked examples in requests + MBPP train splits ─────────────────────> agent SFT ◄┘
                                                                                    │
-                         eval: generated seen/unseen, hand-written, HumanEval, MBPP ◄┘
+                                  eval: generated seen/unseen, HumanEval, MBPP ◄───┤
                                                                                    │
-                         local app: FastAPI + live step stream + Docker sandbox ◄───┘
+                           local app: FastAPI + live step stream + sandbox ◄───────┘
 ```
 
 Model sizes (all 4,096-token context, 50,304-token vocabulary):
@@ -71,89 +130,65 @@ Model sizes (all 4,096-token context, 50,304-token vocabulary):
 - **Python code:** `bigcode/the-stack-dedup` (Python subset), keeping only files whose repositories
   are licensed MIT, Apache-2.0, BSD-2-Clause or BSD-3-Clause, then quality-filtered.
 - **English:** `HuggingFaceFW/fineweb-edu` (sample-10BT), about 15% of pretraining tokens.
-- **Decontamination:** every document sharing a 13-word sequence with HumanEval, MBPP or the
-  hand-written test requests is removed.
-- **Agent data:** generated by this repo's rule-based task families. Every tool result in the
-  training data is the *real* output of running that step, and every episode ends with code that
-  passes hidden tests. 11 families are never used for training, so they measure generalization.
-- **AI-reworded share:** about 40% of training requests are rewritten by Qwen2.5-7B-Instruct
-  (Apache-2.0) for more natural English. Each rewrite is validated and tagged `ai-reworded`.
-  *Exact share: TBD after the rewording run.*
-- **AI-generated tasks:** tens of thousands of distinct tasks written by Qwen2.5-7B-Instruct, each
-  kept only if two independently written solutions agree on every test input in a sandbox, and
-  filtered against HumanEval/MBPP-test and the held-out families. Tagged `ai-generated`; template
-  families are capped at 100 episodes each so they no longer dominate.
-- **Hand-written:** 300+ requests written by the author. The test half is never trained on.
-- **Self-generated:** episodes where the agent solved fresh tasks itself, verified by hidden tests.
-
-## Results
-
-*No results yet.* `python -m vishalam.eval.run` fills this table:
-
-| split | n | pass (≤3 fixes) | first try |
-|---|---|---|---|
-| generated, seen families | 500 | – | – |
-| generated, unseen families | 300 | – | – |
-| hand-written | ~200 | – | – |
-| HumanEval (info only) | 164 | – | – |
-| MBPP (info only) | 500 | – | – |
-
-M1 is done when the agent passes **≥70%** of generated seen-family tasks and **≥40%** of hand-written
-requests.
-
-## Running it
-
-```bash
-python -m venv .venv
-.venv\Scripts\pip install torch --index-url https://download.pytorch.org/whl/cu126
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python -m pytest            # fast tests (~1 min)
-.venv\Scripts\python -m pytest -m slow    # end-to-end agent test (~6 min)
-.venv\Scripts\python -m app.server --demo # UI with a scripted agent (no model needed)
-```
-
-After training, download `model.pt` (`kaggle kernels output`), put it and `tokenizer.json` in `checkpoints/`, then run
-`python -m app.server` and open http://127.0.0.1:8765.
-
-For real isolation of agent code, install Docker Desktop, then run
-`docker build -t vishalam-sandbox sandbox/`. Without Docker the app falls back to a plain subprocess
-with a timeout and says so in the header.
+- **Decontamination:** every pretraining document sharing a 13-word sequence with HumanEval or MBPP is
+  removed.
+- **Agent data (best agent):** 100,000 episodes from 211 rule-based task families, plus episodes from
+  MBPP's train, validation and prompt splits. Every tool result is the *real* output of running that
+  step, and every episode ends with code that passes hidden tests. 39 more families are never trained
+  on, so they measure generalization. 87.7% of requests carry worked examples.
+- **AI-reworded share:** 34.3% of those requests were rewritten by Qwen2.5-7B-Instruct (Apache-2.0) for
+  more natural English, validated and tagged `ai-reworded`.
+- **AI-generated tasks (experiment only, not in the best agent):** 7,024 tasks written by Qwen2.5-7B.
+  Each was kept only if two independently written solutions agreed on every test input in a sandbox,
+  and it passed filters against HumanEval, MBPP-test and the held-out families. Agreement does not catch
+  a mistake both solutions share. Tagged `ai-generated` (`vishalam/data/agent/gen_*.py`).
+- **Not done:** the planned 300+ hand-written requests were not written, and the self-improvement
+  loop (`vishalam/train/expert_iter.py`) is not part of the best agent.
 
 ## Training pipeline (Kaggle)
 
-Everything runs on free Kaggle sessions, and no GitHub or Hugging Face upload tokens are involved:
+Everything ran on free Kaggle sessions, and no GitHub or Hugging Face upload tokens are involved:
 - **Code** reaches Kaggle as the private dataset `vishalam-code`, a tarball of the repo at HEAD,
-  uploaded with `python tools/kaggle_driver.py push-code`.
+  uploaded with `python tools/kaggle_driver.py push-code`. Run it after every commit: kernels check it.
 - **Every intermediate result** (tokenizer, token shards, checkpoints, agent data) is a kernel's
   `/kaggle/working` output. Later kernels attach it as an input.
 - **Long training** alternates between two kernels (`...-a` / `...-b`). Each session resumes from the
-  other kernel's output and stops cleanly before Kaggle's 12-hour limit.
+  other kernel's output and stops cleanly before Kaggle's time limit. `tools/chain350.sh` prefers the TPU
+  and falls back to GPU after a long queue.
 
-| step | kernel(s) | hardware | started by |
-|---|---|---|---|
-| 1. tokenizer + first half of the token shards | `vishalam-data-1` | CPU | Kaggle editor (needs the `HF_TOKEN` secret: the-stack is gated) |
-| 2. second half of the token shards | `vishalam-data-2` | CPU | Kaggle editor (`HF_TOKEN`) |
-| 3. pilot / 125M / 350M pretraining | `vishalam-pretrain-{30m,125m,350m}-{a,b}` | 2×T4 | `kaggle_driver.py chain <size>` |
-| 4. M1 agent data | `vishalam-agent-data` | CPU | `kaggle_driver.py push` |
-| 5. rewording | `vishalam-reword` | T4 | `kaggle_driver.py push` |
-| 6. agent SFT | `vishalam-sft-m1-{125m,350m}-{a,b}` | 2×T4 | `kaggle_driver.py push` |
-| 7. evaluation + self-improvement | `vishalam-eval-m1-{125m,350m}` | T4 | `kaggle_driver.py push` |
+| step | kernel(s) | hardware |
+|---|---|---|
+| 1. tokenizer + token shards | `vishalam-data-{1,2}` | CPU (Kaggle editor, needs the `HF_TOKEN` secret: the-stack is gated) |
+| 2. pretraining | `vishalam-pretrain-{30m,125m,350m}-{a,b}`, `vishalam-pretrain-350m-tpu-{a,b}` | 2×T4, TPU v5e-8 |
+| 3. agent data | `vishalam-agent-data-p{0..5}` | 6 CPU sessions |
+| 4. rewording | `vishalam-reword` | T4 |
+| 5. worked examples + test sets | `vishalam-m1-examples` | CPU |
+| 6. agent SFT | `vishalam-sft-m1-{125m,350m}-{a,b}` | 2×T4 |
+| 7. evaluation | `vishalam-eval-m1-{size}-cpu{0..4}` | 5 CPU sessions (under 3 hours, no GPU quota) |
+| experiment: generated tasks | `vishalam-gen-tasks`, `vishalam-gen-tasks-2`, `vishalam-gen-episodes` | 2×T4, CPU |
+| experiment: base model alone | `vishalam-eval-base-350m`, `...-k10` | CPU |
 
-Kaggle only passes Secrets to runs started from its web editor, which is why the two data kernels
-are started there. `HF_TOKEN` only needs *read* access.
+**Actual cost of 350M on 10B tokens:** about three weeks of calendar time within Kaggle's weekly quotas
+(30 GPU hours, 20 TPU hours). Measured speed: about 42k tokens/s on TPU v5e-8, 8k on 2×T4. TPU sessions
+often queued for 8–25 hours.
 
-**Compute estimate for 350M on 10B tokens:** roughly 300–650 T4-hours depending on real throughput.
-With ~30 free GPU-hours a week on Kaggle, that is about 11+ weeks. The 125M run measures actual
-tokens/sec, and this estimate will be updated from it.
+To reproduce the best agent, run steps 1–7 with `configs/sft-m1-350m.yaml`. Kaggle's CLI only returns a
+kernel's latest output, so older versions must be fetched from its website.
 
 ## Limitations
 
-- Narrow: trained on single-function tasks from 85 task families plus reworded variants. Expect weak
-  results on requests unlike anything in training.
-- The subprocess sandbox (no Docker) only enforces a timeout. Use Docker for anything you did not
-  write yourself.
-- HumanEval/MBPP are reported for information. They use a different style (docstring prompts,
-  typing imports) that M1 never practises.
+- Narrow: single Python functions only, strongest on the 211 families it trained on. On other requests it
+  usually fails, and it can finish with wrong code when its own tests are weak.
+- Requests without worked examples are weaker, because the agent can then only check that its code runs.
+- Even with examples it can add a test of its own with a wrong expected value, then break correct code
+  to match it. Check the code it writes rather than relying on "tests pass" or "failed".
+- In a final check through the app, 1 of 3 simple requests succeeded: `count_vowels` passed,
+  `second_largest` stayed wrong and reported failure, and `count_evens` broke its own correct code.
+  Three requests are only an anecdote, but expect failures even on simple tasks.
+- Validation losses are not comparable across hardware: GPU sessions report about 0.2 higher than TPU
+  sessions (1.70 at step 19,073 vs 1.49 at step 18,500 of the 350M), probably because each scores a
+  different sample.
+- The subprocess sandbox (no Docker) only enforces a timeout.
 
 ## License
 

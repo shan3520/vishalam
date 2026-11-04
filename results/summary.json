@@ -1,0 +1,221 @@
+{
+ "agent": {
+  "125m_no_examples": {
+   "note": "125M agent; 100k family episodes, requests without examples",
+   "table": {
+    "test_seen": {
+     "pass": 0.792,
+     "first_try": 0.096,
+     "finished": 0.132,
+     "n": 500
+    },
+    "test_unseen": {
+     "pass": 0.04,
+     "first_try": 0.0,
+     "finished": 0.0467,
+     "n": 300
+    },
+    "humaneval": {
+     "pass": 0.0122,
+     "first_try": 0.0,
+     "finished": 0.0183,
+     "n": 164
+    },
+    "humaneval (clean)": {
+     "pass": 0.0067,
+     "first_try": 0.0,
+     "finished": 0.0201,
+     "n": 149
+    },
+    "mbpp": {
+     "pass": 0.022,
+     "first_try": 0.0,
+     "finished": 0.048,
+     "n": 500
+    },
+    "mbpp (clean)": {
+     "pass": 0.0209,
+     "first_try": 0.0,
+     "finished": 0.0481,
+     "n": 478
+    }
+   }
+  },
+  "350m_no_examples": {
+   "note": "350M agent; same data, lr 5e-5; MBPP prompt without its tests",
+   "table": {
+    "test_seen": {
+     "pass": 0.478,
+     "first_try": 0.064,
+     "finished": 0.11,
+     "n": 500
+    },
+    "test_unseen": {
+     "pass": 0.0367,
+     "first_try": 0.0,
+     "finished": 0.0767,
+     "n": 300
+    },
+    "humaneval": {
+     "pass": 0.0488,
+     "first_try": 0.0183,
+     "finished": 0.0976,
+     "n": 164
+    },
+    "humaneval (clean)": {
+     "pass": 0.0403,
+     "first_try": 0.0134,
+     "finished": 0.1007,
+     "n": 149
+    },
+    "mbpp": {
+     "pass": 0.036,
+     "first_try": 0.01,
+     "finished": 0.086,
+     "n": 500
+    },
+    "mbpp (clean)": {
+     "pass": 0.0335,
+     "first_try": 0.0084,
+     "finished": 0.0795,
+     "n": 478
+    }
+   }
+  },
+  "350m_examples_BEST": {
+   "note": "350M agent; requests with worked examples, lr 1e-4 (weights/vishalam-350m-agent.pt)",
+   "table": {
+    "test_seen": {
+     "pass": 0.88,
+     "first_try": 0.662,
+     "finished": 0.866,
+     "n": 500
+    },
+    "test_unseen": {
+     "pass": 0.0367,
+     "first_try": 0.0,
+     "finished": 0.12,
+     "n": 300
+    },
+    "humaneval": {
+     "pass": 0.1037,
+     "first_try": 0.0976,
+     "finished": 0.122,
+     "n": 164
+    },
+    "humaneval (clean)": {
+     "pass": 0.0805,
+     "first_try": 0.0738,
+     "finished": 0.1007,
+     "n": 149
+    },
+    "mbpp": {
+     "pass": 0.084,
+     "first_try": 0.08,
+     "finished": 0.088,
+     "n": 500
+    },
+    "mbpp (clean)": {
+     "pass": 0.0732,
+     "first_try": 0.069,
+     "finished": 0.0774,
+     "n": 478
+    }
+   }
+  },
+  "350m_generated": {
+   "note": "350M agent; 7,024 Qwen-written tasks + family episodes capped at 40, 3 epochs",
+   "table": {
+    "test_seen": {
+     "pass": 0.538,
+     "first_try": 0.388,
+     "finished": 0.536,
+     "n": 500
+    },
+    "test_unseen": {
+     "pass": 0.07,
+     "first_try": 0.0067,
+     "finished": 0.0933,
+     "n": 300
+    },
+    "humaneval": {
+     "pass": 0.0732,
+     "first_try": 0.0671,
+     "finished": 0.0976,
+     "n": 164
+    },
+    "humaneval (clean)": {
+     "pass": 0.0537,
+     "first_try": 0.0537,
+     "finished": 0.0872,
+     "n": 149
+    },
+    "mbpp": {
+     "pass": 0.092,
+     "first_try": 0.088,
+     "finished": 0.094,
+     "n": 500
+    },
+    "mbpp (clean)": {
+     "pass": 0.09,
+     "first_try": 0.0858,
+     "finished": 0.0921,
+     "n": 478
+    }
+   }
+  }
+ },
+ "base_350m_humaneval": {
+  "greedy_one_attempt": {
+   "n": 164,
+   "pass_at_1": 0.0976,
+   "n_clean": 149,
+   "pass_at_1_clean": 0.094
+  },
+  "sampled_T0.8_up_to_10_attempts": {
+   "n": 164,
+   "n_clean": 149,
+   "pass_at_1": 0.0488,
+   "pass_at_1_clean": 0.0537,
+   "pass_at_2": 0.0854,
+   "pass_at_2_clean": 0.0872,
+   "pass_at_5": 0.1098,
+   "pass_at_5_clean": 0.094,
+   "pass_at_10": 0.1402,
+   "pass_at_10_clean": 0.1141
+  },
+  "note": "pass@k lets the hidden tests choose among attempts, so it is an upper bound on what retrying can gain."
+ },
+ "paired_best_vs_generated": {
+  "test_seen": {
+   "gained": 9,
+   "lost": 180
+  },
+  "test_unseen": {
+   "gained": 14,
+   "lost": 4
+  },
+  "humaneval": {
+   "gained": 2,
+   "lost": 7
+  },
+  "mbpp": {
+   "gained": 27,
+   "lost": 23
+  }
+ },
+ "best_seen_by_request_type": {
+  "create": {
+   "n": 70,
+   "pass": 0.6857
+  },
+  "create+examples": {
+   "n": 352,
+   "pass": 0.929
+  },
+  "fix+examples": {
+   "n": 78,
+   "pass": 0.8333
+  }
+ }
+}

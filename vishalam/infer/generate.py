@@ -18,8 +18,9 @@ def pick_device(prefer: str | None = None) -> str:
 
 def load_model(weights: str | Path, device: str | None = None, quantize_cpu: bool = False):
     """Loads a weights-only export ({"model": state_dict, "config": {...}}) or a full training ckpt
-    (needs "config" too). quantize_cpu=True converts Linear layers to int8 on CPU; whether that is
-    faster depends on model size, so use fastest_setup() to decide."""
+    (needs "config" too). quantize_cpu=True converts Linear layers to int8 on CPU. It is faster but it
+    broke the 350M agent (the first tool call came out garbled, then it looped on run_tests), so
+    fastest_setup() never picks it; re-check quality before using it."""
     device = pick_device(device)
     state = torch.load(weights, map_location="cpu", weights_only=False)
     cfg = ModelConfig(**state["config"])
@@ -94,11 +95,11 @@ def load_tokenizer(path: str | Path) -> Tokenizer:
 
 
 def fastest_setup(weights: str | Path, trial_tokens: int = 48) -> tuple[str, bool]:
-    """Benchmark the available options on this machine; returns (device, quantize_cpu).
-    Small models are overhead-bound (fp32 CPU often wins); larger ones favour GPU or int8."""
+    """Benchmark the available options on this machine; returns (device, quantize_cpu). Speed is all it
+    measures, so only options known to keep the model's quality are tried: fp32 CPU and fp16 GPU, not int8."""
     import time
 
-    options = [("cpu", False), ("cpu", True)] + ([("cuda", False)] if torch.cuda.is_available() else [])
+    options = [("cpu", False)] + ([("cuda", False)] if torch.cuda.is_available() else [])
     best, best_speed = options[0], 0.0
     for dev, q in options:
         try:

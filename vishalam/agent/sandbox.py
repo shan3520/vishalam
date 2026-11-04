@@ -121,8 +121,19 @@ class DockerSandbox:
         return self._run(["timeout", str(int(self.timeout)), "python", "-c", code], workspace)
 
 
+def _docker_ready() -> bool:
+    """Installed, daemon running and image built: all three are needed to run anything."""
+    if shutil.which("docker") is None:
+        return False
+    try:
+        return subprocess.run(["docker", "image", "inspect", DockerSandbox.IMAGE], capture_output=True,
+                              timeout=15).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def default_sandbox():
-    """Docker when available (local app), else subprocess (Kaggle/Colab/tests)."""
-    if os.environ.get("VISHALAM_SANDBOX", "").lower() == "subprocess" or shutil.which("docker") is None:
+    """Docker when it can actually run (local app), else subprocess (Kaggle/Colab/tests)."""
+    if os.environ.get("VISHALAM_SANDBOX", "").lower() == "subprocess" or not _docker_ready():
         return SubprocessSandbox()
     return DockerSandbox()

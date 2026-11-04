@@ -1,0 +1,20 @@
+# Experiment (not the best agent): 350M fine-tuning on vishalam-gen-episodes, 7,024 Qwen-written tasks plus family
+# episodes capped at 40 each. Result: seen 53.8%, unseen 7.0%, HumanEval 7.3%, MBPP 9.2% (results/summary.json).
+# To repeat it, copy this over sft-m1-350m.yaml: the SFT notebook reads configs/sft-m1-<size>.yaml.
+name: vishalam-350m-agent-m1
+init: hub:vishalam-350m/final/model.pt
+train:
+  seq_len: 4096
+  micro_batch: 2
+  global_batch_seqs: 32     # 131k tokens per step
+  epochs: 3                 # about 24k episodes: 289 steps (1 epoch would be about 100 steps)
+  mix_fraction: 0.2         # 20% of each step is pretraining text (keeps general code knowledge)
+  lr: 1.0e-4
+  min_lr_ratio: 0.1
+  warmup_steps: 30
+  weight_decay: 0.0
+  grad_clip: 1.0
+  z_loss: 0.0
+  grad_checkpointing: true
+  eval_every: 200
+  save_every_minutes: 30

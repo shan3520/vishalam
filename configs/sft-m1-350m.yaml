@@ -1,15 +1,16 @@
-# M1 agent fine-tuning of the 350M main model.
+# M1 agent fine-tuning of the 350M main model: the settings of the best agent (weights/vishalam-350m-agent.pt).
+# Data: vishalam-m1-examples (100k family episodes, 87.7% with worked examples) + MBPP train/validation/prompt.
 name: vishalam-350m-agent-m1
 init: hub:vishalam-350m/final/model.pt
 train:
   seq_len: 4096
   micro_batch: 2
   global_batch_seqs: 32     # 131k tokens per step
-  epochs: 3                 # 24k episodes (7k distinct generated tasks + families capped at 40): 1 epoch is only ~110 steps
+  epochs: 1                 # 488 steps; 3 epochs memorised the first 85 task families (93% seen vs 3% unseen, 125M)
   mix_fraction: 0.2         # 20% of each step is pretraining text (keeps general code knowledge)
   lr: 1.0e-4                # 5e-5 under-fit the agent data (350M: 48% seen vs 79% for the 125M at 1e-4)
   min_lr_ratio: 0.1
-  warmup_steps: 30
+  warmup_steps: 100
   weight_decay: 0.0
   grad_clip: 1.0
   z_loss: 0.0

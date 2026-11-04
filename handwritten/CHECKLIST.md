@@ -1,5 +1,9 @@
 # Hand-written requests: your part of the dataset
 
+> **Status: not written.** The project was paused after Milestone 1 without this set, so the 40%
+> hand-written target was never measured. This guide stays in case the project resumes. Nothing depends
+> on `requests.jsonl` existing: the evaluation simply skips this set.
+
 You write **300+ requests** yourself, in your own words. This is the human-authored part of
 Vishalam's data, and the test half is how we measure whether the agent understands the way real
 people actually ask for things.

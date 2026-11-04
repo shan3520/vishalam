@@ -8,8 +8,11 @@ __pycache__/
 /runs/
 *.bin
 *.pt
+!/weights/*.pt
 *.safetensors
 app/history.db
 kaggle.json
 .env
 app/workspaces/
+/results/*
+!/results/summary.json

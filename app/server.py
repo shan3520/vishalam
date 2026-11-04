@@ -1,6 +1,6 @@
 """Vishalam local web app.
 
-    python -m app.server                       # uses checkpoints/model.pt + checkpoints/tokenizer.json
+    python -m app.server                       # uses weights/vishalam-350m-agent.pt + weights/tokenizer.json (git lfs pull)
     python -m app.server --weights path/model.pt --tokenizer path/tokenizer.json
     python -m app.server --demo                # no model yet: scripted agent replays generated tasks
 
@@ -207,8 +207,8 @@ def main() -> None:
     import uvicorn
 
     ap = argparse.ArgumentParser()
-    ap.add_argument("--weights", default="checkpoints/model.pt")
-    ap.add_argument("--tokenizer", default="checkpoints/tokenizer.json")
+    ap.add_argument("--weights", default="weights/vishalam-350m-agent.pt")
+    ap.add_argument("--tokenizer", default="weights/tokenizer.json")
     ap.add_argument("--demo", action="store_true")
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()

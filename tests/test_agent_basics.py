@@ -79,3 +79,35 @@ def test_sandbox_timeout(tmp_path):
     sb = SubprocessSandbox(timeout=2)
     r = sb.run_python(tmp_path, "while True: pass")
     assert r.timed_out and "Timed out" in r.output
+
+
+def test_fastest_setup_never_picks_int8(tmp_path):
+    # speed is all it measures, and int8 broke the 350M agent
+    import torch
+
+    from vishalam.infer.generate import fastest_setup
+    from vishalam.model.config import ModelConfig
+    from vishalam.model.model import Vishalam
+
+    cfg = ModelConfig(vocab_size=384, d_model=32, n_layers=1, n_heads=2, ffn_dim=64, max_seq_len=128)
+    path = tmp_path / "m.pt"
+    torch.save({"model": Vishalam(cfg).state_dict(), "config": cfg.__dict__}, path)
+    device, quantize = fastest_setup(path)
+    assert quantize is False and device in ("cpu", "cuda")
+
+
+def test_default_sandbox_needs_a_running_docker(monkeypatch):
+    # installed but not running (or image not built): every test run would fail to connect
+    import subprocess
+    from types import SimpleNamespace
+
+    from vishalam.agent import sandbox as sb
+
+    monkeypatch.delenv("VISHALAM_SANDBOX", raising=False)
+    monkeypatch.setattr(sb.shutil, "which", lambda name: "docker")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=1))
+    assert isinstance(sb.default_sandbox(), sb.SubprocessSandbox)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: SimpleNamespace(returncode=0))
+    assert isinstance(sb.default_sandbox(), sb.DockerSandbox)
+    monkeypatch.setattr(sb.shutil, "which", lambda name: None)
+    assert isinstance(sb.default_sandbox(), sb.SubprocessSandbox)

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Once 350M pretraining has finished (tools/chain350.sh logs "350m pretraining finished") and the M1
-# data kernel ($M1, default vishalam-m1-examples) is COMPLETE, run the M1 agent fine-tuning (ping-pong
+# data kernel ($M1, default vishalam-m1-examples, which gave the best agent) is COMPLETE, run the M1 agent fine-tuning (ping-pong
 # sft-a/b sessions until it prints "finished"), then the evaluation (tools/eval_cpu.sh).
 #   /usr/bin/bash tools/after_pretrain_350m.sh >> runs/m1_350m.log 2>&1
 set -u
-export M1=${M1:-vishalam-gen-episodes}
+export M1=${M1:-vishalam-m1-examples}
 PY=.venv/Scripts/python.exe
 D="$PY tools/kaggle_driver.py"
 stamp() { date '+%m-%d %H:%M'; }
