@@ -2,7 +2,7 @@
 # episodes capped at 40 each. Result: seen 53.8%, unseen 7.0%, HumanEval 7.3%, MBPP 9.2% (results/summary.json).
 # To repeat it, copy this over sft-m1-350m.yaml: the SFT notebook reads configs/sft-m1-<size>.yaml.
 name: vishalam-350m-agent-m1
-init: hub:vishalam-350m/final/model.pt
+init: hub:vishalam-350m/final/model.pt  # the Kaggle notebooks override this with --init
 train:
   seq_len: 4096
   micro_batch: 2

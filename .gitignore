@@ -2,7 +2,7 @@
 __pycache__/
 *.pyc
 .pytest_cache/
-# large / private artifacts — these live in the private HF repos, never in git
+# large artifacts and private local files: not in git
 /data/
 /checkpoints/
 /runs/

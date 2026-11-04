@@ -8,6 +8,9 @@ tests, writes code, runs the tests in a sandbox and tries to fix its own mistake
 > (10B tokens, free Kaggle hardware only). The agent passes **88%** of new tasks from the task families
 > it trained on, but only **3.7%** from families it never saw, so it is **not** a general coding
 > assistant. The hand-written-request target was never measured. M2 and M3 were not started.
+>
+> **This source is public so the work can be read and reviewed. It is not open source, and the trained
+> weights are not included.** See [License](#license).
 
 ## What it does
 
@@ -32,7 +35,7 @@ All numbers come from `results/summary.json`. "Pass" means the code passes hidde
 |---|---|---|---|---|
 | 125M, requests without examples | 79.2% | 4.0% | 1.2% | 2.2% |
 | 350M, requests without examples | 47.8% | 3.7% | 4.9% | 3.6% |
-| **350M, requests with examples (best, in `weights/`)** | **88.0%** | **3.7%** | **10.4%** | **8.4%** |
+| **350M, requests with examples (best)** | **88.0%** | **3.7%** | **10.4%** | **8.4%** |
 | 350M, 7,024 AI-generated tasks | 53.8% | 7.0% | 7.3% | 9.2% |
 
 Rows are not all like for like. The test tasks changed when examples were added to requests, and the
@@ -59,23 +62,25 @@ requests (**not measured**: the requests were not written, so M1 is not complete
 - **Retrying does not rescue it.** Up to 10 sampled attempts (temperature 0.8) reach at most **14.0%**
   (11.4% clean), even when the hidden tests choose the winner. Lower temperatures were not tried.
 
-## Using the trained model
+## Running it
 
-The weights are stored with [Git LFS](https://git-lfs.com). Install it before cloning; without it you
-get a small pointer file instead of the model. `weights/vishalam-350m-agent.pt` is about 823 MB.
+The trained weights are not included, so the steps below run the interface with a scripted agent and no
+model. Running them needs Python 3.11 and permission from the author (see [License](#license)).
 
 ```bash
-git lfs install
 git clone https://github.com/shan3520/vishalam.git
 cd vishalam
 python -m venv .venv
 .venv\Scripts\pip install torch --index-url https://download.pytorch.org/whl/cu126
 .venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python -m app.server
+.venv\Scripts\python -m app.server --demo
 ```
 
-Then open http://127.0.0.1:8765. Loading takes 1-2 minutes on a laptop, and small tasks then took 20-50
-seconds. `python -m app.server --demo` runs the UI with a scripted agent and no model.
+Then open http://127.0.0.1:8765. Tests: `.venv\Scripts\python -m pytest` (fast) and `-m slow`
+(end-to-end agent).
+
+With the weights in `weights/` (`vishalam-350m-agent.pt` and `tokenizer.json`), `python -m app.server` runs the
+real agent. Loading took 1-2 minutes on a laptop, and small tasks then took 20-50 seconds.
 
 Requests work best as a single Python function with one or more worked examples.
 
@@ -86,8 +91,6 @@ The app uses a Docker sandbox when Docker is running and the image is built
 (`docker build -t vishalam-sandbox sandbox/`). Otherwise it falls back to a plain subprocess with a
 timeout, which does **not** isolate the code; the header shows which one is in use. Use Docker for anything
 you would not run yourself.
-
-Tests: `.venv\Scripts\python -m pytest` (fast) and `-m slow` (end-to-end agent).
 
 ## Built from scratch vs. libraries
 
@@ -192,5 +195,7 @@ kernel's latest output, so older versions must be fetched from its website.
 
 ## License
 
-Proprietary, all rights reserved. See `LICENSE`. Third-party data and models used in building
-Vishalam are credited in `THIRD_PARTY_NOTICES.md`.
+Proprietary, all rights reserved. See `LICENSE`. This repository is public for viewing: GitHub's terms let
+other users view and fork a public repository on GitHub, and no other permission is granted. To use, copy or
+build on this work, ask the author through GitHub. Third-party data and models used in building Vishalam are
+credited in `THIRD_PARTY_NOTICES.md`.

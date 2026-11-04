@@ -1,6 +1,6 @@
 # M1 agent fine-tuning of the 125M model (first working agent / demo).
 name: vishalam-125m-agent-m1
-init: hub:vishalam-125m/final/model.pt
+init: hub:vishalam-125m/final/model.pt  # the Kaggle notebooks override this with --init
 train:
   seq_len: 4096
   micro_batch: 4

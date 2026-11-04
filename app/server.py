@@ -91,7 +91,7 @@ class App:
             initial = episode.get("initial_files", {})
         else:
             if self.agent is None:
-                raise HTTPException(400, "No model loaded yet. Train Vishalam first (see README), "
+                raise HTTPException(400, "No model loaded: the trained weights are not included (see README). "
                                          "or start the app with --demo and try a demo task.")
             request = body.request.strip()
             if not request:

@@ -83,7 +83,7 @@
    }
   },
   "350m_examples_BEST": {
-   "note": "350M agent; requests with worked examples, lr 1e-4 (weights/vishalam-350m-agent.pt)",
+   "note": "350M agent; requests with worked examples, lr 1e-4 (the best agent)",
    "table": {
     "test_seen": {
      "pass": 0.88,

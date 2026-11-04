@@ -1,7 +1,7 @@
-# M1 agent fine-tuning of the 350M main model: the settings of the best agent (weights/vishalam-350m-agent.pt).
+# M1 agent fine-tuning of the 350M main model: the settings of the best agent.
 # Data: vishalam-m1-examples (100k family episodes, 87.7% with worked examples) + MBPP train/validation/prompt.
 name: vishalam-350m-agent-m1
-init: hub:vishalam-350m/final/model.pt
+init: hub:vishalam-350m/final/model.pt  # the Kaggle notebooks override this with --init
 train:
   seq_len: 4096
   micro_batch: 2

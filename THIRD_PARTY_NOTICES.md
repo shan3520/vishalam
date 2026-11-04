@@ -32,9 +32,8 @@ pretraining tokens.
 reference solutions (`vishalam/data/agent/gen_tasks.py`); a candidate is kept only if an independent
 second solution agrees with the reference on every test input when run in a sandbox. Generated
 episodes are tagged `ai-generated`. Qwen is not part of the Vishalam model and no Qwen weights are
-used or distilled; only verified task text and code enter the fine-tuning data. The published weights
-(`weights/vishalam-350m-agent.pt`) used only (1); the generated tasks of (2) were an experiment whose
-model is not published.
+used or distilled; only verified task text and code enter the fine-tuning data. The best agent's
+weights used only (1); the generated tasks of (2) were an experiment.
 - License: Apache License 2.0. Copyright Alibaba Cloud / Qwen team.
 
 ## Evaluation benchmarks (never trained on; overlap removed from training data)
