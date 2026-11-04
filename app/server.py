@@ -1,6 +1,6 @@
 """Vishalam local web app.
 
-    python -m app.server                       # uses weights/vishalam-350m-agent.pt + weights/tokenizer.json (git lfs pull)
+    python -m app.server                       # uses weights/vishalam-350m-agent.pt + weights/tokenizer.json
     python -m app.server --weights path/model.pt --tokenizer path/tokenizer.json
     python -m app.server --demo                # no model yet: scripted agent replays generated tasks
 
