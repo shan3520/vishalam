@@ -92,7 +92,7 @@ class App:
         else:
             if self.agent is None:
                 raise HTTPException(400, "No model loaded: the trained weights are not included (see README). "
-                                         "or start the app with --demo and try a demo task.")
+                                         "Start the app with --demo to try a demo task.")
             request = body.request.strip()
             if not request:
                 raise HTTPException(400, "empty request")
